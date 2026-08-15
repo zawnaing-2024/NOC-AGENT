@@ -303,8 +303,8 @@ def get_devices_overview():
         im = db.get_recent_interface_metrics(dev_id, limit=200)
         bm = db.get_recent_bgp_metrics(dev_id, limit=100)
         om = db.get_recent_ospf_metrics(dev_id, limit=100)
-        rm = db.get_recent_route_metrics(dev_id, limit=1000)
-        nm = db.get_recent_nat_metrics(dev_id, limit=100)
+        routes_cnt = db.get_device_route_count(dev_id)
+        nat_cnt = db.get_device_nat_count(dev_id)
 
         curr_dm = dm[0] if dm else {}
         up_ifaces = len([i for i in im if i.get("running") == 1])
@@ -334,8 +334,8 @@ def get_devices_overview():
             "bgp_total": len(bm),
             "ospf_full": full_ospf,
             "ospf_total": len(om),
-            "routes_count": len(rm),
-            "nat_count": len(nm),
+            "routes_count": routes_cnt,
+            "nat_count": nat_cnt,
             "health": dev_health
         })
     return {"devices": overview_list, "count": len(overview_list)}
@@ -476,16 +476,20 @@ def get_routing_overview():
     inactive_cnt = 0
 
     for d in devices:
-        rm = db.get_recent_route_metrics(d["device_id"], limit=1000)
-        total_routes += len(rm)
+        dev_id = d["device_id"]
+        total_routes += db.get_device_route_count(dev_id)
+        rm = db.get_recent_route_metrics(dev_id, limit=500)
+        seen_dest = set()
         for r in rm:
-            if r.get("active") == 1:
-                active_cnt += 1
-            else:
-                inactive_cnt += 1
-
-            if r.get("dst_address") in ["0.0.0.0/0", "default"] and r.get("active") == 0:
-                def_route_active = False
+            dst = r.get("destination")
+            if dst not in seen_dest:
+                seen_dest.add(dst)
+                if r.get("active") == 1:
+                    active_cnt += 1
+                else:
+                    inactive_cnt += 1
+                if dst in ["0.0.0.0/0", "default"] and r.get("active") == 0:
+                    def_route_active = False
 
     return {
         "default_route_status": "HEALTHY" if def_route_active else "CRITICAL",

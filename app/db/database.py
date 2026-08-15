@@ -505,6 +505,12 @@ class DatabaseManager:
                 rows = conn.execute("SELECT * FROM route_metrics ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
             return [dict(r) for r in rows]
 
+    def get_device_route_count(self, device_id: str) -> int:
+        """Retrieves count of distinct physical route destinations monitored for device_id."""
+        with self.get_connection() as conn:
+            row = conn.execute("SELECT COUNT(DISTINCT destination) FROM route_metrics WHERE device_id = ?", (device_id,)).fetchone()
+            return row[0] if row else 0
+
     def get_recent_nat_metrics(self, device_id: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
             if device_id:
@@ -512,6 +518,12 @@ class DatabaseManager:
             else:
                 rows = conn.execute("SELECT * FROM nat_metrics ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
             return [dict(r) for r in rows]
+
+    def get_device_nat_count(self, device_id: str) -> int:
+        """Retrieves count of distinct physical NAT rules monitored for device_id."""
+        with self.get_connection() as conn:
+            row = conn.execute("SELECT COUNT(DISTINCT rule_id) FROM nat_metrics WHERE device_id = ?", (device_id,)).fetchone()
+            return row[0] if row else 0
 
     def get_recent_bgp_metrics(self, device_id: Optional[str] = None, peer: str = "", limit: int = 100, lookback_minutes: Optional[int] = None) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
