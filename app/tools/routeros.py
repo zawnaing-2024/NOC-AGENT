@@ -72,7 +72,25 @@ def get_routeros_client(
     """
     selected_router = (router or host or "").lower()
 
-    if selected_router == "router2" or host == settings.MIKROTIK_ROUTER2_HOST:
+    # Check DB for device credentials if host is specified
+    db_dev = None
+    if host:
+        try:
+            from app.db.database import db
+            db_dev = db.get_device_by_id(host, redact_password=False)
+            if not db_dev:
+                devs = db.get_devices(include_deleted=False, redact_password=False)
+                db_dev = next((d for d in devs if d.get("ip_address") == host or d.get("device_id") == host), None)
+        except Exception:
+            pass
+
+    if db_dev:
+        target_host = db_dev.get("ip_address") or host
+        target_port = port or db_dev.get("api_port") or settings.MIKROTIK_PORT
+        target_username = username or db_dev.get("username") or settings.MIKROTIK_USERNAME
+        db_pass = db_dev.get("password")
+        target_password = password or (db_pass if db_pass and db_pass != "[REDACTED]" else None) or settings.MIKROTIK_PASSWORD
+    elif selected_router == "router2" or host == settings.MIKROTIK_ROUTER2_HOST:
         target_host = settings.MIKROTIK_ROUTER2_HOST or settings.MIKROTIK_HOST
         target_port = port or settings.MIKROTIK_ROUTER2_PORT
         target_username = username or settings.MIKROTIK_ROUTER2_USERNAME

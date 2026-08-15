@@ -307,16 +307,34 @@ def collect_device_telemetry(host: str) -> Dict[str, Any]:
     return stats
 
 
+def get_active_hosts_to_collect() -> List[str]:
+    """Retrieves all active, non-deleted, monitoring-enabled devices from database inventory and config settings."""
+    hosts = []
+    try:
+        devices = db.get_devices(include_deleted=False, redact_password=False)
+        for dev in devices:
+            if dev.get("monitoring_enabled", 1) and not dev.get("is_deleted", 0):
+                ip = dev.get("ip_address") or dev.get("device_id")
+                if ip and ip not in hosts:
+                    hosts.append(ip)
+    except Exception as ex:
+        logger.warning(f"Failed to fetch devices from DB during collection loop: {ex}")
+
+    if not hosts:
+        if settings.MIKROTIK_ROUTER1_HOST:
+            hosts.append(settings.MIKROTIK_ROUTER1_HOST)
+        if settings.MIKROTIK_ROUTER2_HOST and settings.MIKROTIK_ROUTER2_HOST != settings.MIKROTIK_ROUTER1_HOST:
+            hosts.append(settings.MIKROTIK_ROUTER2_HOST)
+        if not hosts:
+            hosts.append(settings.MIKROTIK_HOST)
+
+    return hosts
+
+
 def run_manual_collection() -> Dict[str, Any]:
     """Executes ONE synchronous collection cycle across all configured routers and returns stats."""
     t_start = time.perf_counter()
-    hosts_to_collect = []
-    if settings.MIKROTIK_ROUTER1_HOST:
-        hosts_to_collect.append(settings.MIKROTIK_ROUTER1_HOST)
-    if settings.MIKROTIK_ROUTER2_HOST and settings.MIKROTIK_ROUTER2_HOST != settings.MIKROTIK_ROUTER1_HOST:
-        hosts_to_collect.append(settings.MIKROTIK_ROUTER2_HOST)
-    if not hosts_to_collect:
-        hosts_to_collect.append(settings.MIKROTIK_HOST)
+    hosts_to_collect = get_active_hosts_to_collect()
 
     summary_stats = {
         "status": "completed",
@@ -349,17 +367,10 @@ def run_manual_collection() -> Dict[str, Any]:
 async def collector_loop() -> None:
     """Async background task executing telemetry collection every COLLECTOR_INTERVAL_SECONDS."""
     logger.info(f"COLLECTOR_START timestamp={time.time()} interval={settings.COLLECTOR_INTERVAL_SECONDS}s database_path={settings.DATABASE_PATH}")
-    
-    hosts_to_collect = []
-    if settings.MIKROTIK_ROUTER1_HOST:
-        hosts_to_collect.append(settings.MIKROTIK_ROUTER1_HOST)
-    if settings.MIKROTIK_ROUTER2_HOST and settings.MIKROTIK_ROUTER2_HOST != settings.MIKROTIK_ROUTER1_HOST:
-        hosts_to_collect.append(settings.MIKROTIK_ROUTER2_HOST)
-    if not hosts_to_collect:
-        hosts_to_collect.append(settings.MIKROTIK_HOST)
 
     while True:
         try:
+            hosts_to_collect = get_active_hosts_to_collect()
             logger.info(f"COLLECTOR_TICK timestamp={time.time()} database_path={settings.DATABASE_PATH} targets={hosts_to_collect}")
             for target_host in hosts_to_collect:
                 # Execute blocking RouterOS polling in thread pool to avoid blocking asyncio event loop
