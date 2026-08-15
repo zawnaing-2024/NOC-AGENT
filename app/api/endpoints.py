@@ -3,9 +3,25 @@ from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, HTTPException, Query, status
 
 from app.db.database import db
+from app.collector.service import run_manual_collection
 
 logger = logging.getLogger("mikrotik_noc_agent.api")
 router = APIRouter(prefix="/api", tags=["Phase 4 AIOps Telemetry & Incidents"])
+
+
+@router.get("/database/status", status_code=status.HTTP_200_OK)
+def get_database_status():
+    """Retrieves SQLite database diagnostic status, file size, and table row counts."""
+    return db.get_database_status()
+
+
+@router.post("/collector/run", status_code=status.HTTP_200_OK)
+def trigger_manual_collection():
+    """
+    Executes ONE synchronous collection cycle across all configured routers.
+    Returns collection statistics without calling LLM or modifying router config.
+    """
+    return run_manual_collection()
 
 
 @router.get("/devices", status_code=status.HTTP_200_OK)

@@ -277,6 +277,30 @@ class DatabaseManager:
 
     # --- QUERY METHODS FOR BASELINE & API ---
 
+    def get_database_status(self) -> Dict[str, Any]:
+        """Returns database path, existence, file size, table list, and table row counts."""
+        db_path_obj = Path(self.db_path)
+        exists = db_path_obj.exists()
+        size_bytes = db_path_obj.stat().st_size if exists else 0
+
+        tables = ["devices", "device_metrics", "interface_metrics", "bgp_metrics", "ospf_metrics", "nat_metrics", "route_metrics", "events", "incidents", "alerts"]
+        row_counts = {}
+
+        if exists:
+            with self.get_connection() as conn:
+                for t in tables:
+                    try:
+                        row_counts[t] = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+                    except Exception:
+                        row_counts[t] = 0
+
+        return {
+            "database_path": str(self.db_path),
+            "exists": exists,
+            "size_bytes": size_bytes,
+            "row_counts": row_counts
+        }
+
     def get_devices(self) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
             rows = conn.execute("SELECT * FROM devices ORDER BY device_id").fetchall()
