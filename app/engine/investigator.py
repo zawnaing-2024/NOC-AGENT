@@ -848,14 +848,17 @@ class DeepNocInvestigator:
         else:
             prev = rx_rates[-2]
             curr = rx_rates[-1]
-            if prev > 0 and (prev - curr) / prev >= 0.50:
-                pattern = "SUDDEN_DROP"
-            elif len(rx_rates) >= 3 and rx_rates[-3] > rx_rates[-2] > rx_rates[-1]:
+            is_gradual_decline = len(rx_rates) >= 3 and all(rx_rates[i] > rx_rates[i+1] for i in range(len(rx_rates)-3, len(rx_rates)-1))
+            is_gradual_incline = len(rx_rates) >= 3 and all(rx_rates[i] < rx_rates[i+1] for i in range(len(rx_rates)-3, len(rx_rates)-1))
+
+            if is_gradual_decline:
                 pattern = "GRADUAL_DROP"
+            elif is_gradual_incline:
+                pattern = "GRADUAL_SPIKE"
+            elif prev > 0 and (prev - curr) / prev >= 0.50:
+                pattern = "SUDDEN_DROP"
             elif prev > 0 and (curr - prev) / prev >= 1.0:
                 pattern = "SUDDEN_SPIKE"
-            elif len(rx_rates) >= 3 and rx_rates[-3] < rx_rates[-2] < rx_rates[-1]:
-                pattern = "GRADUAL_SPIKE"
             else:
                 pattern = "NORMAL_VARIATION"
 
