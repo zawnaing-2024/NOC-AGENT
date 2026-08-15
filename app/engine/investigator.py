@@ -889,16 +889,41 @@ class DeepNocInvestigator:
                 "details": "Loopback interface is a logical virtual software interface. Physical cable/SFP fiber checks are NOT APPLICABLE."
             }
         elif event_type == "DEFAULT_ROUTE_DOWN":
+            active_gw = evidence.get("gateway", "10.59.190.5")
+            is_active = False
+            alt_count = 0
+            dist = 1
+            tbl = "main"
+            proto = "STATIC"
+
+            with db.get_connection() as conn:
+                rows = conn.execute(
+                    "SELECT * FROM route_metrics WHERE device_id = ? AND destination = '0.0.0.0/0' ORDER BY id DESC LIMIT 20",
+                    (device_id,)
+                ).fetchall()
+                if rows:
+                    latest_ts = rows[0]["timestamp"]
+                    latest_batch = [dict(r) for r in rows if r["timestamp"] == latest_ts]
+                    active_routes = [r for r in latest_batch if r.get("active") == 1]
+                    is_active = len(active_routes) > 0
+                    alt_count = max(0, len(latest_batch) - 1)
+                    if active_routes:
+                        active_gw = active_routes[0].get("gateway") or active_gw
+                        dist = active_routes[0].get("distance", 1)
+                        tbl = active_routes[0].get("routing_table") or "main"
+
+            reachability = "REACHABLE" if is_active else "UNREACHABLE"
+
             return {
                 "domain": "ROUTING",
                 "destination": "0.0.0.0/0",
-                "active": False,
-                "gateway": evidence.get("gateway", "10.59.190.5"),
-                "table": "main",
-                "distance": 1,
-                "protocol": "STATIC",
-                "gateway_reachability": "UNREACHABLE",
-                "alternate_routes_count": 0
+                "active": is_active,
+                "gateway": active_gw,
+                "table": tbl,
+                "distance": dist,
+                "protocol": proto,
+                "gateway_reachability": reachability,
+                "alternate_routes_count": alt_count
             }
         elif event_type == "BGP_SESSION_DOWN":
             return {

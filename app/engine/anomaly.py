@@ -247,8 +247,16 @@ class AnomalyDetector:
                 route_metrics = conn.execute("SELECT * FROM route_metrics WHERE device_id = ? AND destination = '0.0.0.0/0' ORDER BY id DESC LIMIT 50", (dev_id,)).fetchall()
                 total_metrics += len(route_metrics)
                 if route_metrics:
-                    curr_act = bool(route_metrics[0]["active"])
-                    prev_act = bool(route_metrics[1]["active"]) if len(route_metrics) > 1 else None
+                    latest_ts = route_metrics[0]["timestamp"]
+                    latest_batch = [r for r in route_metrics if r["timestamp"] == latest_ts]
+                    curr_act = any(bool(r["active"]) for r in latest_batch)
+
+                    other_batches = [r for r in route_metrics if r["timestamp"] != latest_ts]
+                    prev_act = None
+                    if other_batches:
+                        prev_ts = other_batches[0]["timestamp"]
+                        prev_batch = [r for r in other_batches if r["timestamp"] == prev_ts]
+                        prev_act = any(bool(r["active"]) for r in prev_batch)
 
                     evts = AnomalyDetector.check_default_route_status(dev_id, curr_act, prev_act)
                     all_detected_events.extend(evts)
