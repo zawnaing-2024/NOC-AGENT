@@ -9,6 +9,30 @@ logger = logging.getLogger("mikrotik_noc_agent.api")
 router = APIRouter(prefix="/api", tags=["Phase 4 AIOps Telemetry & Incidents"])
 
 
+from app.engine.anomaly import AnomalyDetector, engine_diagnostics, CONFIGURED_RULES
+
+
+@router.get("/anomaly/status", status_code=status.HTTP_200_OK)
+def get_anomaly_status():
+    """Retrieves anomaly engine status and execution diagnostics."""
+    return engine_diagnostics
+
+
+@router.get("/anomaly/rules", status_code=status.HTTP_200_OK)
+def get_anomaly_rules():
+    """Retrieves list of configured deterministic anomaly detection rules."""
+    return CONFIGURED_RULES
+
+
+@router.post("/anomaly/evaluate", status_code=status.HTTP_200_OK)
+def trigger_anomaly_evaluation():
+    """
+    Executes ONE deterministic anomaly evaluation cycle across historical SQLite telemetry.
+    Returns rule-by-rule evaluation statistics and anomaly details.
+    """
+    return AnomalyDetector.run_evaluation_cycle()
+
+
 @router.get("/database/status", status_code=status.HTTP_200_OK)
 def get_database_status():
     """Retrieves SQLite database diagnostic status, file size, and table row counts."""
