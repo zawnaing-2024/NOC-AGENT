@@ -186,3 +186,34 @@ def get_device_latest_ai_analysis(device_id: str):
     if not analysis:
         raise HTTPException(status_code=404, detail=f"No AI analysis found for device '{device_id}'.")
     return {"device_id": device_id, "analysis_status": analysis.get("status"), "analysis": analysis}
+
+
+# --- OPENROUTER PHASE 5 NOC AGENT ENDPOINTS ---
+
+from app.ai.openrouter_client import get_openrouter_status
+from app.ai.agent import AIAgentService
+
+
+@router.get("/ai/status", status_code=status.HTTP_200_OK)
+def get_ai_provider_status():
+    """Retrieves OpenRouter AI provider status and model configuration (without exposing API keys)."""
+    return get_openrouter_status()
+
+
+@router.get("/ai/incidents/{incident_id}/analyses", status_code=status.HTTP_200_OK)
+def get_incident_analyses_history(incident_id: str):
+    """Retrieves full history of AI analyses performed for an incident."""
+    inc = db.get_incident_by_id(incident_id)
+    if not inc:
+        raise HTTPException(status_code=404, detail=f"Incident '{incident_id}' not found.")
+    analyses = AIAgentService.get_incident_analyses(incident_id)
+    return {"incident_id": incident_id, "analyses": analyses, "count": len(analyses)}
+
+
+@router.get("/ai/analyses/{analysis_id}", status_code=status.HTTP_200_OK)
+def get_analysis_by_id_endpoint(analysis_id: str):
+    """Retrieves a single AI analysis record by analysis_id."""
+    analysis = AIAgentService.get_analysis_by_id(analysis_id)
+    if not analysis:
+        raise HTTPException(status_code=404, detail=f"Analysis '{analysis_id}' not found.")
+    return analysis
