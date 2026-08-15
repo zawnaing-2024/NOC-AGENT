@@ -6,6 +6,7 @@ from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, To
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 
+from app.config import settings
 from app.llm import get_llm, OpenRouterTokenCallback
 from app.tools.routeros import (
     get_system_health,
@@ -137,10 +138,29 @@ RECOMMENDED_NEXT_CHECKS
 """
 
 
+def extract_target_router_host(user_prompt: str) -> Optional[str]:
+    """Extracts target router IP or identifier from user prompt if present."""
+    prompt_lower = user_prompt.lower()
+    
+    if "103.95.4.1" in user_prompt or "router2" in prompt_lower or "router 2" in prompt_lower:
+        return settings.MIKROTIK_ROUTER2_HOST or "103.95.4.1"
+    if "103.59.163.7" in user_prompt or "router1" in prompt_lower or "router 1" in prompt_lower:
+        return settings.MIKROTIK_ROUTER1_HOST or "103.59.163.7"
+        
+    ip_matches = re.findall(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", user_prompt)
+    for ip in ip_matches:
+        if ip == settings.MIKROTIK_ROUTER2_HOST:
+            return settings.MIKROTIK_ROUTER2_HOST
+        if ip == settings.MIKROTIK_ROUTER1_HOST:
+            return settings.MIKROTIK_ROUTER1_HOST
+            
+    return None
+
+
 def perform_cross_domain_investigation(user_prompt: str) -> Tuple[str, List[str]]:
     """
     Python-driven cross-domain evidence collection & correlation engine (Max 3 stages):
-    Stage 1: Intent detection & primary domain summary fetching
+    Stage 1: Intent detection & target router selection & primary domain summary fetching
     Stage 2: Targeted domain detail investigation
     Stage 3: Cross-domain dependency matching (Layer-2 interface state correlation)
     Returns (correlated_evidence_text, tools_used_list).
@@ -149,7 +169,12 @@ def perform_cross_domain_investigation(user_prompt: str) -> Tuple[str, List[str]
     prompt_lower = user_prompt.lower()
     evidence_blocks: List[str] = []
 
-    with get_routeros_client() as api:
+    target_host = extract_target_router_host(user_prompt)
+
+    with get_routeros_client(host=target_host) as api:
+        if target_host:
+            evidence_blocks.append(f"Target Router Connection: Established connection to Router {target_host}.")
+
         # DOMAIN 1: BGP
         if "bgp" in prompt_lower:
             tools_used.append("get_bgp_peers")
@@ -201,7 +226,7 @@ def perform_cross_domain_investigation(user_prompt: str) -> Tuple[str, List[str]
                     evidence_blocks.append(f"PYTHON CORRELATION FINDING: OSPF neighbor {nbr_name} is Down on {nbr_detail.interface}. Interface {down_iface} is LINK_DOWN. Primary RCA Candidate: UNDERLYING_LINK_SUSPECTED.")
 
         # DOMAIN 3: STATIC ROUTING
-        elif "route" in prompt_lower or "routing" in prompt_lower or "gateway" in prompt_lower or bool(re.search(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}", prompt_lower)):
+        elif "route" in prompt_lower or "routing" in prompt_lower or "gateway" in prompt_lower or bool(re.search(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2}\b", prompt_lower)):
             tools_used.append("get_static_routes")
             routes_data = parse_static_routes_data(api, details=True)
             evidence_blocks.append(f"Static Route Table & Details: {routes_data.model_dump_json(exclude_none=True)}")
