@@ -85,7 +85,8 @@ Ensure your response is valid JSON matching this exact structure:
         )
 
         if not res["success"]:
-            logger.warning(f"OpenRouter API analysis failed for incident {incident_id}: {res['error']}")
+            err_msg = str(res.get("error", "Unknown OpenRouter API error"))
+            logger.warning(f"OpenRouter API analysis failed for incident {incident_id}: {err_msg}")
             rec = AIAnalysisRecord(
                 analysis_id=analysis_id,
                 incident_id=incident_id,
@@ -93,16 +94,18 @@ Ensure your response is valid JSON matching this exact structure:
                 model=settings.OPENROUTER_MODEL,
                 prompt_version=settings.PROMPT_VERSION,
                 status="AI_UNAVAILABLE",
-                summary="OpenRouter AI service is currently unavailable.",
-                error_message=res["error"]
+                summary=f"OpenRouter AI request failed: {err_msg}",
+                error_message=err_msg
             )
             db.upsert_ai_analysis(rec)
             return {
                 "success": False,
                 "analysis_id": analysis_id,
                 "incident_id": incident_id,
-                "error": "AI_PROVIDER_UNAVAILABLE",
-                "details": res["error"]
+                "status": "AI_UNAVAILABLE",
+                "summary": f"OpenRouter API Error: {err_msg}",
+                "error": f"OpenRouter API Error: {err_msg}",
+                "details": err_msg
             }
 
         # Validate JSON Response with Pydantic AIIncidentAnalysisResponse

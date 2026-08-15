@@ -838,7 +838,7 @@ def trigger_incident_ai_investigation(incident_id: str):
     """Triggers manual OpenRouter AI RCA investigation for an incident."""
     from app.ai.agent import AIAgentService
     result = AIAgentService.analyze_incident(incident_id)
-    return result
+    return JSONResponse(status_code=200, content=result)
 
 
 @router.post("/events/{event_id}/ai-investigate", status_code=status.HTTP_200_OK)
@@ -848,4 +848,4 @@ def trigger_event_ai_investigation(event_id: str):
     evt = db.get_event_by_id(event_id)
     inc_id = (evt.get("incident_id") if evt else None) or event_id
     result = AIAgentService.analyze_incident(inc_id)
-    return result
+    return JSONResponse(status_code=200, content=result)

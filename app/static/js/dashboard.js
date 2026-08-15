@@ -1844,11 +1844,16 @@ async function triggerManualAiInvestigation(incidentId) {
   try {
     const res = await fetch(`/api/incidents/${incidentId}/investigate`, { method: 'POST' });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || 'AI investigation request failed.');
+    if (!res.ok) throw new Error(data.detail || data.error || 'AI investigation request failed.');
 
     if (container) {
-      const summary = data.analysis ? data.analysis.summary : (data.summary || 'AI synthesis completed.');
-      container.innerHTML = `<div class="alert-box healthy"><p style="font-size:13px; line-height:1.5;">${escapeHtml(summary)}</p></div>`;
+      if (data.success === false || data.status === 'AI_UNAVAILABLE') {
+        const errMsg = data.error_message || data.error || data.summary || 'AI service unavailable.';
+        container.innerHTML = `<div class="alert-box warning"><p style="font-size:13px; line-height:1.5;">⚠️ <strong>AI Analysis Status:</strong> ${escapeHtml(errMsg)}</p></div>`;
+      } else {
+        const summary = data.analysis ? data.analysis.summary : (data.summary || 'AI synthesis completed.');
+        container.innerHTML = `<div class="alert-box healthy"><p style="font-size:13px; line-height:1.5;">${escapeHtml(summary)}</p></div>`;
+      }
     }
   } catch (err) {
     if (container) {

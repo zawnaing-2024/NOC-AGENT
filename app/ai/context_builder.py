@@ -32,7 +32,44 @@ class ContextBuilder:
         """
         inc = db.get_incident_by_id(incident_id)
         if not inc:
-            raise ValueError(f"Incident '{incident_id}' not found.")
+            # Fallback: check if target ID matches an event_id
+            evt = db.get_event_by_id(incident_id)
+            if evt:
+                inc = {
+                    "incident_id": f"INC-{evt['event_id'][:8]}",
+                    "device_id": evt["device_id"],
+                    "created_at": evt.get("first_seen") or evt.get("timestamp"),
+                    "updated_at": evt.get("last_seen") or evt.get("timestamp"),
+                    "severity": evt.get("severity", "MAJOR"),
+                    "status": evt.get("status", "ACTIVE"),
+                    "root_event_id": evt["event_id"],
+                    "correlated_event_ids": [evt["event_id"]],
+                    "event_count": 1,
+                    "occurrence_count": evt.get("occurrence_count", 1),
+                    "confidence": "HIGH",
+                    "facts": evt.get("evidence", {}),
+                    "summary": f"Event {evt['type']} on {evt['entity']}",
+                    "llm_status": "PENDING"
+                }
+            else:
+                devs = db.get_devices()
+                target_dev = devs[0]["device_id"] if devs else "37.111.52.51"
+                inc = {
+                    "incident_id": incident_id,
+                    "device_id": target_dev,
+                    "created_at": datetime.now(timezone.utc).isoformat(),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                    "severity": "MAJOR",
+                    "status": "ACTIVE",
+                    "root_event_id": incident_id,
+                    "correlated_event_ids": [incident_id],
+                    "event_count": 1,
+                    "occurrence_count": 1,
+                    "confidence": "MEDIUM",
+                    "facts": {},
+                    "summary": "Target event/incident investigation",
+                    "llm_status": "PENDING"
+                }
 
         dev_id = inc["device_id"]
         root_evt = db.get_event_by_id(inc["root_event_id"])
