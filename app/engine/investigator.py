@@ -713,18 +713,7 @@ class DeepNocInvestigator:
             if inc and inc.get("root_event_id"):
                 evt = db.get_event_by_id(inc["root_event_id"])
             if not evt:
-                devs = db.get_devices()
-                dev_id = inc["device_id"] if inc else (devs[0]["device_id"] if devs else "37.111.52.51")
-                evt = {
-                    "event_id": event_id,
-                    "device_id": dev_id,
-                    "type": "ANOMALY",
-                    "entity": "system",
-                    "severity": "MAJOR",
-                    "status": "OPEN",
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "evidence": {}
-                }
+                return {"error": f"Event '{event_id}' not found.", "status": "FAILED"}
 
         device_id = evt["device_id"]
         event_type = evt.get("type") or evt.get("event_type") or "ANOMALY"
