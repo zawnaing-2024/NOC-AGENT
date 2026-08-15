@@ -281,12 +281,19 @@ def collect_device_telemetry(host: str) -> Dict[str, Any]:
                         ))
                         stats["route_metrics"] += 1
 
-                    def_route = next((r for r in routes_data.routes if r.destination == "0.0.0.0/0"), None)
-                    if def_route:
+                    def_routes = [r for r in routes_data.routes if r.destination == "0.0.0.0/0"]
+                    if def_routes:
+                        any_active = any(r.active for r in def_routes)
                         with db.get_connection() as conn:
-                            rows = conn.execute("SELECT * FROM route_metrics WHERE device_id = ? AND destination = '0.0.0.0/0' ORDER BY id DESC LIMIT 2", (device_id,)).fetchall()
-                            prev_act = bool(rows[1]["active"]) if len(rows) > 1 else None
-                            events.extend(AnomalyDetector.check_default_route_status(device_id, def_route.active, prev_act))
+                            rows = conn.execute(
+                                "SELECT active FROM route_metrics WHERE device_id = ? AND destination = '0.0.0.0/0' ORDER BY id DESC LIMIT 50",
+                                (device_id,)
+                            ).fetchall()
+                            prev_act = None
+                            if len(rows) > len(def_routes):
+                                prev_act = any(bool(r["active"]) for r in rows[len(def_routes):len(def_routes)*2])
+
+                        events.extend(AnomalyDetector.check_default_route_status(device_id, any_active, prev_act))
             except Exception as e:
                 logger.error(f"Static routes collection error for {device_id}: {e}")
                 stats["errors"]["routes"] = str(e)
