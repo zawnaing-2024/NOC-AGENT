@@ -78,7 +78,7 @@ Separate facts from hypotheses.
 Do not infer topology without evidence.
 Do not force an RCA.
 Use NO_ANOMALY for healthy systems.
-Use INSUFFICIENT_EVIDENCE when evidence is insufficient.
+Use INSUFFICIENT_EVIDENCE when evidence is insufficient or explicit dependency is missing.
 Do not claim service impact without evidence.
 Return a concise NOC assessment.
 
@@ -93,7 +93,7 @@ ANOMALY
 <Detected anomaly or 'None detected.'>
 
 RCA
-<RCA Category: NO_ANOMALY | INSUFFICIENT_EVIDENCE | UNDERLYING_LINK_SUSPECTED | NEXT_HOP_UNREACHABLE | UPSTREAM_DEPENDENCY | BGP_SESSION_DOWN | OSPF_ADJACENCY_DOWN>
+<RCA Category: NO_ANOMALY | INSUFFICIENT_EVIDENCE | UPSTREAM_DEPENDENCY | NEXT_HOP_UNREACHABLE | BGP_SESSION_DOWN | OSPF_ADJACENCY_DOWN>
 
 CONFIDENCE
 <HIGH | MEDIUM | LOW>
@@ -136,7 +136,7 @@ def perform_cross_domain_investigation(user_prompt: str) -> Tuple[str, List[str]
 
 def perform_cross_domain_investigation_profiled(user_prompt: str) -> Tuple[str, List[str], List[ToolCallProfiling], int, int]:
     """
-    Python-driven cross-domain evidence collection & correlation engine with compact JSON payload optimization.
+    Python-driven cross-domain evidence collection & correlation engine with deterministic NAT & Static Routing correlation.
     Returns (correlated_evidence_text, tools_used_list, tool_profiling_list, intent_ms, correlation_ms).
     """
     t_start = time.perf_counter()
@@ -267,8 +267,74 @@ def perform_cross_domain_investigation_profiled(user_prompt: str) -> Tuple[str, 
                     "rca_candidate": rca_cat
                 })
 
-        # DOMAIN 3: STATIC ROUTING
-        elif "route" in prompt_lower or "routing" in prompt_lower or "gateway" in prompt_lower or bool(re.search(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2}\b", prompt_lower)):
+        # DOMAIN 3: NAT (Check NAT keywords BEFORE static routes!)
+        elif "nat" in prompt_lower or "masquerade" in prompt_lower or "firewall" in prompt_lower:
+            t0 = time.perf_counter()
+            nat_data = parse_nat_rules_data(api, details=True)
+            t1 = time.perf_counter()
+            dur_ms = max(1, int((t1 - t0) * 1000))
+            tools_used.append("get_nat_rules")
+            tool_profiles.append(ToolCallProfiling(tool="get_nat_rules", duration_ms=dur_ms, routeros_ms=dur_ms))
+
+            t0 = time.perf_counter()
+            iface_summary = parse_interfaces_data(api, details=False)
+            t1 = time.perf_counter()
+            dur_ms = max(1, int((t1 - t0) * 1000))
+            tools_used.append("get_interfaces")
+            tool_profiles.append(ToolCallProfiling(tool="get_interfaces", duration_ms=dur_ms, routeros_ms=dur_ms))
+
+            down_ifaces = iface_summary.summary.link_down_interfaces
+
+            matched_dependency_rule = None
+            if nat_data.rules and down_ifaces:
+                for r in nat_data.rules:
+                    if not r.disabled and r.out_interface:
+                        for d_if in down_ifaces:
+                            if r.out_interface.lower() == d_if.lower():
+                                matched_dependency_rule = (r, d_if)
+                                break
+                    if matched_dependency_rule:
+                        break
+
+            if matched_dependency_rule:
+                rule_obj, d_iface = matched_dependency_rule
+                compact_evidence_dicts.append({
+                    "domain": "NAT",
+                    "rules_total": nat_data.total,
+                    "active_rules": nat_data.active,
+                    "disabled_rules": nat_data.disabled,
+                    "matched_rule_id": rule_obj.rule_id,
+                    "out_interface": rule_obj.out_interface,
+                    "interface_state": "LINK_DOWN",
+                    "packets": rule_obj.packets,
+                    "anomaly": f"NAT rule {rule_obj.rule_id} specifies out-interface {rule_obj.out_interface} which is LINK_DOWN",
+                    "rca_candidate": "UPSTREAM_DEPENDENCY",
+                    "explanation": f"Active NAT rule {rule_obj.rule_id} out-interface {rule_obj.out_interface} is LINK_DOWN."
+                })
+            elif down_ifaces:
+                compact_evidence_dicts.append({
+                    "domain": "NAT",
+                    "rules_total": nat_data.total,
+                    "active_rules": nat_data.active,
+                    "disabled_rules": nat_data.disabled,
+                    "down_interfaces": down_ifaces,
+                    "explicit_nat_dependency_found": False,
+                    "anomaly": "UNLINKED_INTERFACE_DOWN",
+                    "rca_candidate": "INSUFFICIENT_EVIDENCE",
+                    "explanation": "Down interface(s) exist, but no active NAT rule explicitly specifies out-interface matching the down interface. Cannot infer NAT dependency from interface state alone."
+                })
+            else:
+                compact_evidence_dicts.append({
+                    "domain": "NAT",
+                    "rules_total": nat_data.total,
+                    "active_rules": nat_data.active,
+                    "disabled_rules": nat_data.disabled,
+                    "anomaly": None,
+                    "rca_candidate": "NO_ANOMALY"
+                })
+
+        # DOMAIN 4: STATIC ROUTING
+        elif "route" in prompt_lower or "routing" in prompt_lower or "gateway" in prompt_lower or bool(re.search(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(?:/\d{1,2})?\b", prompt_lower)):
             t0 = time.perf_counter()
             routes_data = parse_static_routes_data(api, details=True)
             t1 = time.perf_counter()
@@ -302,56 +368,29 @@ def perform_cross_domain_investigation_profiled(user_prompt: str) -> Tuple[str, 
                 tools_used.append("get_interfaces")
                 tool_profiles.append(ToolCallProfiling(tool="get_interfaces", duration_ms=dur_ms, routeros_ms=dur_ms))
 
-                link_down_iface = iface_summary.summary.link_down_interfaces[0] if iface_summary.summary.link_down > 0 else None
+                link_down_ifaces = iface_summary.summary.link_down_interfaces
+                gw_interface_down = False
+                if route_detail.interface and link_down_ifaces:
+                    if any(r_if.lower() in d_if.lower() or d_if.lower() in r_if.lower() for d_if in link_down_ifaces for r_if in [route_detail.interface]):
+                        gw_interface_down = True
+
+                if gw_interface_down:
+                    rca_cat = "NEXT_HOP_UNREACHABLE"
+                    explanation = f"Static route {target_dst} via gateway {route_detail.gateway} is inactive because gateway egress interface {route_detail.interface} is LINK_DOWN."
+                else:
+                    rca_cat = "INSUFFICIENT_EVIDENCE"
+                    explanation = f"Static route {target_dst} via gateway {route_detail.gateway} is inactive, but gateway interface is operational. Reason for inactive state is unconfirmed."
 
                 compact_evidence_dicts.append({
                     "domain": "STATIC_ROUTE",
                     "destination": target_dst,
                     "active": False,
                     "gateway": route_detail.gateway,
-                    "gateway_reachable": (link_down_iface is None),
-                    "anomaly": "NEXT_HOP_UNREACHABLE",
-                    "rca_candidate": "NEXT_HOP_UNREACHABLE"
-                })
-
-        # DOMAIN 4: NAT
-        elif "nat" in prompt_lower or "masquerade" in prompt_lower or "firewall" in prompt_lower:
-            t0 = time.perf_counter()
-            nat_data = parse_nat_rules_data(api, details=True)
-            t1 = time.perf_counter()
-            dur_ms = max(1, int((t1 - t0) * 1000))
-            tools_used.append("get_nat_rules")
-            tool_profiles.append(ToolCallProfiling(tool="get_nat_rules", duration_ms=dur_ms, routeros_ms=dur_ms))
-
-            if not nat_data.zero_counter_rules and "investigate" not in prompt_lower:
-                compact_evidence_dicts.append({
-                    "domain": "NAT",
-                    "rules_total": nat_data.total,
-                    "active_rules": nat_data.active,
-                    "disabled_rules": nat_data.disabled,
-                    "anomaly": None,
-                    "rca_candidate": "NO_ANOMALY"
-                })
-            else:
-                t0 = time.perf_counter()
-                iface_summary = parse_interfaces_data(api, details=False)
-                t1 = time.perf_counter()
-                dur_ms = max(1, int((t1 - t0) * 1000))
-                tools_used.append("get_interfaces")
-                tool_profiles.append(ToolCallProfiling(tool="get_interfaces", duration_ms=dur_ms, routeros_ms=dur_ms))
-
-                link_down_iface = iface_summary.summary.link_down_interfaces[0] if iface_summary.summary.link_down > 0 else None
-                rca_cat = "UPSTREAM_DEPENDENCY" if link_down_iface else "NAT_TRAFFIC_ANOMALY"
-
-                compact_evidence_dicts.append({
-                    "domain": "NAT",
-                    "rules_total": nat_data.total,
-                    "active_rules": nat_data.active,
-                    "disabled_rules": nat_data.disabled,
-                    "wan_interface": link_down_iface or "configured WAN",
-                    "wan_running": (link_down_iface is None),
-                    "anomaly": rca_cat,
-                    "rca_candidate": rca_cat
+                    "gateway_interface": route_detail.interface,
+                    "gateway_interface_down": gw_interface_down,
+                    "anomaly": f"Route {target_dst} inactive",
+                    "rca_candidate": rca_cat,
+                    "explanation": explanation
                 })
 
         # GENERAL SYSTEM / INTERFACE INVESTIGATION
