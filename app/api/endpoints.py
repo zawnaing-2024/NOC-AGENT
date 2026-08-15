@@ -285,3 +285,219 @@ def get_analysis_by_id_endpoint(analysis_id: str):
     if not analysis:
         raise HTTPException(status_code=404, detail=f"Analysis '{analysis_id}' not found.")
     return analysis
+
+
+# --- PHASE 6 NOC DASHBOARD OVERVIEW & DEEP INVESTIGATION ENDPOINTS ---
+
+from app.engine.investigator import DeepNocInvestigator
+
+
+@router.get("/devices/overview", status_code=status.HTTP_200_OK)
+def get_devices_overview():
+    """Retrieves multi-device overview matrix (CPU, RAM, Interfaces UP/DOWN, BGP, OSPF, Routes, NAT, Health)."""
+    devices = db.get_devices()
+    overview_list = []
+    for d in devices:
+        dev_id = d["device_id"]
+        dm = db.get_recent_device_metrics(dev_id, limit=1)
+        im = db.get_recent_interface_metrics(dev_id, limit=200)
+        bm = db.get_recent_bgp_metrics(dev_id, limit=100)
+        om = db.get_recent_ospf_metrics(dev_id, limit=100)
+        rm = db.get_recent_route_metrics(dev_id, limit=1000)
+        nm = db.get_recent_nat_metrics(dev_id, limit=100)
+
+        curr_dm = dm[0] if dm else {}
+        up_ifaces = len([i for i in im if i.get("running") == 1])
+        total_ifaces = len(im)
+        est_bgp = len([b for b in bm if b.get("established") == 1])
+        full_ospf = len([o for o in om if "Full" in str(o.get("state"))])
+
+        # Determine health status
+        events = db.get_events(device_id=dev_id, status="ACTIVE", limit=5)
+        dev_health = "HEALTHY"
+        if any(e["severity"] == "CRITICAL" for e in events):
+            dev_health = "CRITICAL"
+        elif any(e["severity"] == "MAJOR" for e in events):
+            dev_health = "WARNING"
+
+        overview_list.append({
+            "device_id": dev_id,
+            "name": d.get("name", dev_id),
+            "ip_address": d.get("ip_address", dev_id),
+            "version": d.get("version", "RouterOS v7"),
+            "cpu_percent": curr_dm.get("cpu_percent", 0.0),
+            "memory_percent": curr_dm.get("memory_percent", 0.0),
+            "uptime_seconds": curr_dm.get("uptime_seconds", 0),
+            "interfaces_up": up_ifaces,
+            "interfaces_total": total_ifaces,
+            "bgp_established": est_bgp,
+            "bgp_total": len(bm),
+            "ospf_full": full_ospf,
+            "ospf_total": len(om),
+            "routes_count": len(rm),
+            "nat_count": len(nm),
+            "health": dev_health
+        })
+    return {"devices": overview_list, "count": len(overview_list)}
+
+
+@router.get("/interfaces/overview", status_code=status.HTTP_200_OK)
+def get_interfaces_overview(device_id: Optional[str] = Query(default=None)):
+    """Retrieves complete interface status, bandwidth rates, error/drop counters, and health tags."""
+    devices = [device_id] if device_id else [d["device_id"] for d in db.get_devices()]
+    interface_list = []
+
+    for dev in devices:
+        im = db.get_recent_interface_metrics(dev, limit=200)
+        # Deduplicate latest per interface
+        seen = set()
+        for i in im:
+            ifname = i["interface_name"]
+            if ifname not in seen:
+                seen.add(ifname)
+                state = "UP" if i.get("running") == 1 else "DOWN"
+                h_tag = "HEALTHY" if state == "UP" else "CRITICAL"
+                if i.get("rx_errors", 0) > 0 or i.get("tx_errors", 0) > 0:
+                    h_tag = "WARNING"
+
+                interface_list.append({
+                    "device_id": dev,
+                    "interface_name": ifname,
+                    "status": state,
+                    "running": i.get("running", 0),
+                    "disabled": i.get("disabled", 0),
+                    "rx_bps": i.get("rx_bps", 0.0),
+                    "tx_bps": i.get("tx_bps", 0.0),
+                    "rx_errors": i.get("rx_errors", 0),
+                    "tx_errors": i.get("tx_errors", 0),
+                    "rx_drops": i.get("rx_drops", 0),
+                    "tx_drops": i.get("tx_drops", 0),
+                    "health": h_tag,
+                    "timestamp": i.get("timestamp")
+                })
+
+    return {"interfaces": interface_list, "count": len(interface_list)}
+
+
+@router.get("/routing/bgp/overview", status_code=status.HTTP_200_OK)
+def get_bgp_overview(device_id: Optional[str] = Query(default=None)):
+    """Retrieves complete BGP sessions overview across all devices."""
+    devices = [device_id] if device_id else [d["device_id"] for d in db.get_devices()]
+    bgp_list = []
+    total_est = 0
+    total_down = 0
+
+    for dev in devices:
+        bm = db.get_recent_bgp_metrics(dev, limit=100)
+        seen = set()
+        for b in bm:
+            peer = b["peer"]
+            if peer not in seen:
+                seen.add(peer)
+                is_est = b.get("established") == 1
+                if is_est:
+                    total_est += 1
+                else:
+                    total_down += 1
+
+                bgp_list.append({
+                    "device_id": dev,
+                    "peer": peer,
+                    "remote_address": b.get("remote_address", peer),
+                    "state": "ESTABLISHED" if is_est else "DOWN",
+                    "established": is_est,
+                    "uptime": b.get("uptime", "0s"),
+                    "prefix_count": b.get("prefix_count", 0),
+                    "health": "HEALTHY" if is_est else "CRITICAL"
+                })
+
+    return {
+        "bgp_peers": bgp_list,
+        "total": len(bgp_list),
+        "established_count": total_est,
+        "down_count": total_down
+    }
+
+
+@router.get("/routing/ospf/overview", status_code=status.HTTP_200_OK)
+def get_ospf_overview(device_id: Optional[str] = Query(default=None)):
+    """Retrieves complete OSPF neighbor overview across all devices."""
+    devices = [device_id] if device_id else [d["device_id"] for d in db.get_devices()]
+    ospf_list = []
+    full_cnt = 0
+    down_cnt = 0
+
+    for dev in devices:
+        om = db.get_recent_ospf_metrics(dev, limit=100)
+        seen = set()
+        for o in om:
+            nbr = o["neighbor"]
+            if nbr not in seen:
+                seen.add(nbr)
+                state_str = str(o.get("state", "UNKNOWN"))
+                is_full = "Full" in state_str
+                if is_full:
+                    full_cnt += 1
+                else:
+                    down_cnt += 1
+
+                ospf_list.append({
+                    "device_id": dev,
+                    "neighbor": nbr,
+                    "router_id": o.get("router_id", nbr),
+                    "state": state_str,
+                    "interface": o.get("interface", "unknown"),
+                    "area": o.get("area", "main"),
+                    "health": "HEALTHY" if is_full else "CRITICAL"
+                })
+
+    return {
+        "ospf_neighbors": ospf_list,
+        "total": len(ospf_list),
+        "full_count": full_cnt,
+        "down_count": down_cnt
+    }
+
+
+@router.get("/routing/overview", status_code=status.HTTP_200_OK)
+def get_routing_overview():
+    """Retrieves routing table breakdown, default route status, active vs inactive route summary."""
+    devices = db.get_devices()
+    def_route_active = True
+    total_routes = 0
+    active_cnt = 0
+    inactive_cnt = 0
+
+    for d in devices:
+        rm = db.get_recent_route_metrics(d["device_id"], limit=1000)
+        total_routes += len(rm)
+        for r in rm:
+            if r.get("active") == 1:
+                active_cnt += 1
+            else:
+                inactive_cnt += 1
+
+            if r.get("dst_address") in ["0.0.0.0/0", "default"] and r.get("active") == 0:
+                def_route_active = False
+
+    return {
+        "default_route_status": "HEALTHY" if def_route_active else "CRITICAL",
+        "default_route_active": def_route_active,
+        "total_routes": total_routes,
+        "active_routes": active_cnt,
+        "inactive_routes": inactive_cnt
+    }
+
+
+@router.get("/incidents/{incident_id}/deep-investigation", status_code=status.HTTP_200_OK)
+def get_deep_investigation_endpoint(incident_id: str):
+    """Triggers and retrieves deep deterministic NOC investigation for an incident."""
+    inc = db.get_incident_by_id(incident_id)
+    if not inc:
+        raise HTTPException(status_code=404, detail=f"Incident '{incident_id}' not found.")
+
+    res = DeepNocInvestigator.run_investigation(incident_id)
+    if res.get("status") == "FAILED":
+        raise HTTPException(status_code=500, detail=res.get("error", "Investigation failed."))
+
+    return res

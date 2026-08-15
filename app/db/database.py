@@ -235,9 +235,26 @@ class DatabaseManager:
                 )
             """)
 
+            # 12. Deep NOC Investigations (Phase 6 Investigation Engine Persistence)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS investigations (
+                    investigation_id TEXT PRIMARY KEY,
+                    incident_id TEXT,
+                    device_id TEXT,
+                    created_at TEXT,
+                    status TEXT,
+                    primary_failure TEXT,
+                    secondary_symptoms_json TEXT,
+                    evidence_json TEXT,
+                    recommendations_json TEXT,
+                    visualization_flow_json TEXT
+                )
+            """)
+
             # Database Performance Indexes
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_device_metrics_dev_ts ON device_metrics (device_id, timestamp)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_interface_metrics_dev_if_ts ON interface_metrics (device_id, interface_name, timestamp)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_investigations_incident ON investigations (incident_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_bgp_metrics_dev_peer_ts ON bgp_metrics (device_id, peer, timestamp)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_ospf_metrics_dev_nbr_ts ON ospf_metrics (device_id, neighbor, timestamp)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_events_fingerprint ON events (fingerprint, status)")
@@ -442,6 +459,9 @@ class DatabaseManager:
 
     def get_recent_interface_metrics(self, device_id: Optional[str] = None, interface_name: str = "", limit: int = 100, lookback_minutes: Optional[int] = None) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
+            if device_id and not interface_name:
+                rows = conn.execute("SELECT * FROM interface_metrics WHERE device_id = ? ORDER BY id DESC LIMIT ?", (device_id, limit)).fetchall()
+                return [dict(r) for r in rows]
             if lookback_minutes:
                 from datetime import datetime, timezone, timedelta
                 cutoff = (datetime.now(timezone.utc) - timedelta(minutes=lookback_minutes)).isoformat()
@@ -463,6 +483,22 @@ class DatabaseManager:
                 rows = conn.execute("""
                     SELECT * FROM interface_metrics WHERE interface_name = ? ORDER BY id DESC LIMIT ?
                 """, (interface_name, limit)).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_recent_route_metrics(self, device_id: Optional[str] = None, limit: int = 1000) -> List[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            if device_id:
+                rows = conn.execute("SELECT * FROM route_metrics WHERE device_id = ? ORDER BY id DESC LIMIT ?", (device_id, limit)).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM route_metrics ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_recent_nat_metrics(self, device_id: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            if device_id:
+                rows = conn.execute("SELECT * FROM nat_metrics WHERE device_id = ? ORDER BY id DESC LIMIT ?", (device_id, limit)).fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM nat_metrics ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
             return [dict(r) for r in rows]
 
     def get_recent_bgp_metrics(self, device_id: Optional[str] = None, peer: str = "", limit: int = 100, lookback_minutes: Optional[int] = None) -> List[Dict[str, Any]]:
@@ -715,6 +751,47 @@ class DatabaseManager:
                 except Exception:
                     pass
         return d
+
+    def upsert_investigation(self, inv: Dict[str, Any]) -> None:
+        """Upserts a deep NOC investigation record into SQLite database."""
+        with self.get_connection() as conn:
+            conn.execute("""
+                INSERT INTO investigations (
+                    investigation_id, incident_id, device_id, created_at, status,
+                    primary_failure, secondary_symptoms_json, evidence_json,
+                    recommendations_json, visualization_flow_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(investigation_id) DO UPDATE SET
+                    status=excluded.status,
+                    primary_failure=excluded.primary_failure,
+                    secondary_symptoms_json=excluded.secondary_symptoms_json,
+                    evidence_json=excluded.evidence_json,
+                    recommendations_json=excluded.recommendations_json,
+                    visualization_flow_json=excluded.visualization_flow_json
+            """, (
+                inv["investigation_id"], inv["incident_id"], inv["device_id"], inv["created_at"], inv["status"],
+                inv["primary_failure"], json.dumps(inv.get("secondary_symptoms", [])),
+                json.dumps(inv.get("evidence", [])), json.dumps(inv.get("recommendations", [])),
+                json.dumps(inv.get("visualization_flow", []))
+            ))
+            conn.commit()
+
+    def get_investigation_by_incident_id(self, incident_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieves deep NOC investigation record for an incident."""
+        with self.get_connection() as conn:
+            row = conn.execute("""
+                SELECT * FROM investigations WHERE incident_id = ? ORDER BY created_at DESC LIMIT 1
+            """, (incident_id,)).fetchone()
+            if not row:
+                return None
+            d = dict(row)
+            for f in ["secondary_symptoms_json", "evidence_json", "recommendations_json", "visualization_flow_json"]:
+                if d.get(f):
+                    try:
+                        d[f] = json.loads(d[f])
+                    except Exception:
+                        pass
+            return d
 
 
 db = DatabaseManager()

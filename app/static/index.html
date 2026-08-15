@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MikroTik NOC Monitoring & AI Investigation Agent</title>
+  <link rel="stylesheet" href="/static/css/dashboard.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <!-- Header -->
+  <header>
+    <div class="brand">
+      <span style="font-size: 20px">📡</span>
+      <h1>ISP MikroTik NOC Agent</h1>
+    </div>
+    <div class="header-status">
+      <div class="status-badge" id="live-status">
+        <span class="dot"></span> System Status: HEALTHY
+      </div>
+      <div class="status-badge" id="ai-status">
+        <span class="dot"></span> AI: OpenRouter ● Connected
+      </div>
+      <div class="status-badge">
+        Refresh in: <span id="refresh-counter">10s</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- Navigation Tabs -->
+  <nav class="tabs">
+    <button class="tab-btn active" data-tab="dashboard">📊 Main Dashboard</button>
+    <button class="tab-btn" data-tab="devices">🖥 Devices</button>
+    <button class="tab-btn" data-tab="interfaces">🔌 Interfaces</button>
+    <button class="tab-btn" data-tab="bgp">🌐 BGP</button>
+    <button class="tab-btn" data-tab="ospf">🔄 OSPF</button>
+    <button class="tab-btn" data-tab="routing">🗺 Routing</button>
+    <button class="tab-btn" data-tab="incidents">🚨 Incidents</button>
+  </nav>
+
+  <!-- Main Container -->
+  <main class="container" id="view-container">
+    <!-- Rendered dynamically by dashboard.js -->
+  </main>
+
+  <!-- Investigation Workspace Modal -->
+  <div class="modal-backdrop hidden" id="investigation-modal">
+    <div class="modal-content" id="investigation-modal-body">
+      <!-- Rendered dynamically -->
+    </div>
+  </div>
+
+  <script src="/static/js/dashboard.js"></script>
+</body>
+</html>

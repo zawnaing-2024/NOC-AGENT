@@ -46,15 +46,33 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down MikroTik NOC Engineer Agent API Service")
 
 
+import os
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+
 app = FastAPI(
     title="MikroTik NOC Engineer Agent API",
     description="Production-grade read-only AI NOC Agent with Phase 4 AIOps Telemetry, Baseline Analysis, Event Correlation & Incident Intelligence.",
-    version="4.0.0",
+    version="6.0.0",
     lifespan=lifespan,
 )
 
-# Mount Phase 4 Read-Only AIOps REST API endpoints
+# Mount Phase 4/5/6 Read-Only AIOps REST API endpoints
 app.include_router(api_router)
+
+# Mount Static Assets & Serve NOC Dashboard UI
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+if os.path.exists(static_dir):
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+
+@app.get("/", response_class=FileResponse)
+def serve_dashboard():
+    """Serves the main Phase 6 NOC Dashboard Single Page Application."""
+    index_path = os.path.join(static_dir, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    return JSONResponse(content={"message": "NOC Dashboard UI ready."})
 
 
 @app.get("/health", status_code=status.HTTP_200_OK)
