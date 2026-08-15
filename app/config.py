@@ -38,6 +38,12 @@ class Settings(BaseSettings):
     OPENROUTER_TIMEOUT: int = Field(default=30, description="OpenRouter API request timeout in seconds")
     OPENROUTER_MAX_RETRIES: int = Field(default=2, description="Maximum retries for transient OpenRouter API errors")
 
+    # Phase 5 Local LM Studio API settings (OpenAI-compatible)
+    LM_STUDIO_BASE_URL: str = Field(default="http://localhost:1234/v1", description="LM Studio OpenAI-compatible API base URL")
+    LM_STUDIO_MODEL: str = Field(default="local-model", description="Configured LM Studio model identifier")
+    LM_STUDIO_TIMEOUT: int = Field(default=60, description="LM Studio HTTP request timeout in seconds")
+    PROMPT_VERSION: str = Field(default="phase5-v1", description="Prompt version identifier for AI RCA analyses")
+
     # Phase 4 AIOps Collector, Database, and Correlation Settings
     DATABASE_PATH: str = Field(default="data/noc_agent.db", description="Path to SQLite historical database")
     COLLECTOR_INTERVAL_SECONDS: int = Field(default=60, description="Background telemetry collection interval in seconds")

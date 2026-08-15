@@ -1,6 +1,7 @@
 import logging
 from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, HTTPException, Query, status
+from fastapi.responses import JSONResponse
 
 from app.db.database import db
 from app.collector.service import run_manual_collection
@@ -123,3 +124,65 @@ def get_ospf_history(neighbor: str, device_id: Optional[str] = Query(default=Non
     metrics = db.get_recent_ospf_metrics(device_id=device_id, neighbor=neighbor, limit=limit)
     dev_id = device_id or (metrics[0]["device_id"] if metrics else "103.59.163.7")
     return {"neighbor": neighbor, "device_id": dev_id, "history": metrics, "count": len(metrics)}
+
+
+# --- PHASE 5 AI INTELLIGENCE & RCA ENDPOINTS ---
+
+from app.services.llm_client import check_lm_studio_health
+from app.services.ai_analyzer import AINocAnalyzer
+
+
+@router.get("/ai/health", status_code=status.HTTP_200_OK)
+def get_ai_health():
+    """Retrieves LM Studio local AI service health, active model, and latency."""
+    res = check_lm_studio_health()
+    if res.get("status") != "healthy":
+        return JSONResponse(status_code=503, content=res)
+    return res
+
+
+@router.post("/ai/incidents/{incident_id}/analyze", status_code=status.HTTP_200_OK)
+def analyze_incident_ai(incident_id: str):
+    """
+    Triggers AI-assisted Root Cause Analysis (RCA) on a correlated incident using LM Studio.
+    Validates strict JSON response, grounds facts in evidence, and persists result.
+    """
+    inc = db.get_incident_by_id(incident_id)
+    if not inc:
+        raise HTTPException(status_code=404, detail=f"Incident '{incident_id}' not found.")
+
+    res = AINocAnalyzer.analyze_incident(incident_id)
+    if res.get("status") == "AI_UNAVAILABLE":
+        raise HTTPException(status_code=503, detail=res.get("error", "LM Studio AI service unavailable."))
+    elif res.get("status") == "FAILED":
+        raise HTTPException(status_code=422, detail=res.get("error", "AI RCA JSON validation failed."))
+
+    return res
+
+
+@router.get("/api/ai/incidents/{incident_id}", status_code=status.HTTP_200_OK)
+@router.get("/ai/incidents/{incident_id}", status_code=status.HTTP_200_OK)
+def get_incident_ai_analysis(incident_id: str):
+    """Retrieves the latest persisted AI analysis for an incident."""
+    analysis = db.get_ai_analysis_by_incident_id(incident_id)
+    if not analysis:
+        raise HTTPException(status_code=404, detail=f"No AI analysis found for incident '{incident_id}'.")
+    return {"incident_id": incident_id, "analysis_status": analysis.get("status"), "analysis": analysis}
+
+
+@router.post("/ai/devices/{device_id}/analyze", status_code=status.HTTP_200_OK)
+def analyze_device_ai(device_id: str):
+    """Triggers AI-assisted device health and risk assessment for a targeted device."""
+    res = AINocAnalyzer.analyze_device(device_id)
+    if res.get("status") == "AI_UNAVAILABLE":
+        raise HTTPException(status_code=503, detail=res.get("error", "LM Studio AI service unavailable."))
+    return res
+
+
+@router.get("/ai/devices/{device_id}/latest", status_code=status.HTTP_200_OK)
+def get_device_latest_ai_analysis(device_id: str):
+    """Retrieves the latest persisted AI analysis for a device."""
+    analysis = db.get_ai_analysis_by_device_id(device_id)
+    if not analysis:
+        raise HTTPException(status_code=404, detail=f"No AI analysis found for device '{device_id}'.")
+    return {"device_id": device_id, "analysis_status": analysis.get("status"), "analysis": analysis}

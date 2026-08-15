@@ -127,3 +127,80 @@ class AlertRecord(BaseModel):
     type: str
     status: str = Field(default="OPEN")
     message: str
+
+
+# Phase 5 AI Schemas for Strict JSON LM Studio RCA Response Validation
+
+class Assessment(BaseModel):
+    summary: str = Field(..., description="High-level assessment summary")
+    confidence: str = Field(default="HIGH", description="HIGH, MEDIUM, or LOW")
+
+
+class RootCause(BaseModel):
+    category: str = Field(..., description="Category of root cause (e.g. TRAFFIC_ANOMALY, INTERFACE_DOWN)")
+    finding: str = Field(..., description="Specific root cause finding grounded in evidence")
+    confidence: str = Field(default="HIGH", description="HIGH, MEDIUM, or LOW")
+    evidence: List[str] = Field(default_factory=list, description="Grounding evidence statements")
+
+
+class Impact(BaseModel):
+    severity: str = Field(default="MAJOR", description="CRITICAL, MAJOR, WARNING, INFO")
+    description: str = Field(..., description="Description of network operational impact")
+    affected_device: str = Field(..., description="Target device IP or alias")
+    affected_entity: str = Field(..., description="Target affected interface, peer, or component")
+
+
+class ContributingFactor(BaseModel):
+    factor: str = Field(..., description="Contributing factor description")
+    evidence: str = Field(..., description="Supporting evidence statement")
+
+
+class RecommendedCheck(BaseModel):
+    priority: int = Field(..., description="Priority index (1 = highest)")
+    check: str = Field(..., description="Description of diagnostic check to perform")
+    reason: str = Field(..., description="Technical rationale for the check")
+    command: Optional[str] = Field(default=None, description="Recommended read-only RouterOS diagnostic command")
+
+
+class NextAction(BaseModel):
+    priority: int = Field(..., description="Priority index (1 = highest)")
+    action: str = Field(..., description="Actionable troubleshooting recommendation")
+    reason: str = Field(..., description="Technical rationale for action")
+
+
+class CustomerImpact(BaseModel):
+    status: str = Field(default="UNKNOWN", description="UNKNOWN, NONE, POSSIBLE, LIKELY, CONFIRMED")
+    description: str = Field(..., description="Customer impact assessment description")
+
+
+class AIAnalysisResponse(BaseModel):
+    incident_id: Optional[str] = None
+    device_id: Optional[str] = None
+    assessment: Assessment
+    root_cause: RootCause
+    impact: Impact
+    contributing_factors: List[ContributingFactor] = Field(default_factory=list)
+    recommended_checks: List[RecommendedCheck] = Field(default_factory=list)
+    next_actions: List[NextAction] = Field(default_factory=list)
+    customer_impact: CustomerImpact
+    limitations: List[str] = Field(default_factory=list)
+
+
+class AIAnalysisRecord(BaseModel):
+    analysis_id: str = Field(..., description="Unique UUID analysis identifier")
+    incident_id: Optional[str] = None
+    device_id: Optional[str] = None
+    created_at: str = Field(default_factory=current_utc_timestamp)
+    model: str = Field(default="local-model")
+    prompt_version: str = Field(default="phase5-v1")
+    status: str = Field(default="COMPLETED", description="PENDING, RUNNING, COMPLETED, FAILED, AI_UNAVAILABLE")
+    summary: str = Field(default="")
+    root_cause_json: Dict[str, Any] = Field(default_factory=dict)
+    impact_json: Dict[str, Any] = Field(default_factory=dict)
+    recommended_checks_json: List[Dict[str, Any]] = Field(default_factory=list)
+    next_actions_json: List[Dict[str, Any]] = Field(default_factory=list)
+    full_response_json: Dict[str, Any] = Field(default_factory=dict)
+    confidence: str = Field(default="HIGH")
+    latency_ms: int = Field(default=0)
+    error_message: Optional[str] = None
+

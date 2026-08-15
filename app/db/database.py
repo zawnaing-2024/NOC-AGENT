@@ -17,6 +17,7 @@ from app.db.schemas import (
     EventRecord,
     IncidentRecord,
     AlertRecord,
+    AIAnalysisRecord,
 )
 
 logger = logging.getLogger("mikrotik_noc_agent.db")
@@ -211,6 +212,39 @@ class DatabaseManager:
                     message TEXT
                 )
             """)
+
+            # 11. AI Analyses (Phase 5 RCA Persistence)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS ai_analyses (
+                    analysis_id TEXT PRIMARY KEY,
+                    incident_id TEXT,
+                    device_id TEXT,
+                    created_at TEXT,
+                    model TEXT,
+                    prompt_version TEXT,
+                    status TEXT,
+                    summary TEXT,
+                    root_cause_json TEXT,
+                    impact_json TEXT,
+                    recommended_checks_json TEXT,
+                    next_actions_json TEXT,
+                    full_response_json TEXT,
+                    confidence TEXT,
+                    latency_ms INTEGER,
+                    error_message TEXT
+                )
+            """)
+
+            # Database Performance Indexes
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_device_metrics_dev_ts ON device_metrics (device_id, timestamp)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_interface_metrics_dev_if_ts ON interface_metrics (device_id, interface_name, timestamp)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_bgp_metrics_dev_peer_ts ON bgp_metrics (device_id, peer, timestamp)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_ospf_metrics_dev_nbr_ts ON ospf_metrics (device_id, neighbor, timestamp)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_events_fingerprint ON events (fingerprint, status)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_incidents_status ON incidents (status)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_ai_analyses_incident ON ai_analyses (incident_id)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_ai_analyses_device ON ai_analyses (device_id)")
+
             conn.commit()
 
     # --- INSERTS & QUERIES ---
@@ -567,6 +601,68 @@ class DatabaseManager:
                 except Exception:
                     pass
             return d
+
+    # --- PHASE 5 AI ANALYSIS PERSISTENCE & QUERIES ---
+
+    def upsert_ai_analysis(self, record: AIAnalysisRecord) -> None:
+        """Persists or updates an AI analysis record in SQLite."""
+        with self.get_connection() as conn:
+            conn.execute("""
+                INSERT INTO ai_analyses (
+                    analysis_id, incident_id, device_id, created_at, model, prompt_version,
+                    status, summary, root_cause_json, impact_json, recommended_checks_json,
+                    next_actions_json, full_response_json, confidence, latency_ms, error_message
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(analysis_id) DO UPDATE SET
+                    status=excluded.status,
+                    summary=excluded.summary,
+                    root_cause_json=excluded.root_cause_json,
+                    impact_json=excluded.impact_json,
+                    recommended_checks_json=excluded.recommended_checks_json,
+                    next_actions_json=excluded.next_actions_json,
+                    full_response_json=excluded.full_response_json,
+                    confidence=excluded.confidence,
+                    latency_ms=excluded.latency_ms,
+                    error_message=excluded.error_message
+            """, (
+                record.analysis_id, record.incident_id, record.device_id, record.created_at,
+                record.model, record.prompt_version, record.status, record.summary,
+                json.dumps(record.root_cause_json), json.dumps(record.impact_json),
+                json.dumps(record.recommended_checks_json), json.dumps(record.next_actions_json),
+                json.dumps(record.full_response_json), record.confidence, record.latency_ms, record.error_message
+            ))
+            conn.commit()
+
+    def get_ai_analysis_by_incident_id(self, incident_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieves the latest AI RCA analysis record for an incident."""
+        with self.get_connection() as conn:
+            row = conn.execute("""
+                SELECT * FROM ai_analyses WHERE incident_id = ? ORDER BY created_at DESC LIMIT 1
+            """, (incident_id,)).fetchone()
+            if not row:
+                return None
+            return self._parse_ai_analysis_row(row)
+
+    def get_ai_analysis_by_device_id(self, device_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieves the latest AI health analysis record for a device."""
+        with self.get_connection() as conn:
+            row = conn.execute("""
+                SELECT * FROM ai_analyses WHERE device_id = ? ORDER BY created_at DESC LIMIT 1
+            """, (device_id,)).fetchone()
+            if not row:
+                return None
+            return self._parse_ai_analysis_row(row)
+
+    def _parse_ai_analysis_row(self, row: sqlite3.Row) -> Dict[str, Any]:
+        """Deserializes JSON fields in an ai_analyses row."""
+        d = dict(row)
+        for json_field in ["root_cause_json", "impact_json", "recommended_checks_json", "next_actions_json", "full_response_json"]:
+            if d.get(json_field):
+                try:
+                    d[json_field] = json.loads(d[json_field])
+                except Exception:
+                    pass
+        return d
 
 
 db = DatabaseManager()
