@@ -196,36 +196,33 @@ def get_ospf_history(neighbor: str, device_id: Optional[str] = Query(default=Non
     return {"neighbor": neighbor, "device_id": dev_id, "history": metrics, "count": len(metrics)}
 
 
-# --- PHASE 5 AI INTELLIGENCE & RCA ENDPOINTS ---
+# --- PHASE 5 PRODUCTION OPENROUTER AI INTELLIGENCE & RCA ENDPOINTS ---
 
+from app.ai.openrouter_client import get_openrouter_status
+from app.ai.agent import AIAgentService
 from app.services.llm_client import check_lm_studio_health
-from app.services.ai_analyzer import AINocAnalyzer
 
 
 @router.get("/ai/health", status_code=status.HTTP_200_OK)
 def get_ai_health():
-    """Retrieves LM Studio local AI service health, active model, and latency."""
-    res = check_lm_studio_health()
-    if res.get("status") != "healthy":
-        return JSONResponse(status_code=503, content=res)
-    return res
+    """Retrieves OpenRouter primary production AI provider status."""
+    return get_openrouter_status()
 
 
 @router.post("/ai/incidents/{incident_id}/analyze", status_code=status.HTTP_200_OK)
 def analyze_incident_ai(incident_id: str):
     """
-    Triggers AI-assisted Root Cause Analysis (RCA) on a correlated incident using LM Studio.
-    Validates strict JSON response, grounds facts in evidence, and persists result.
+    Triggers production OpenRouter AI Root Cause Analysis (RCA) on a correlated incident.
+    Gathers verified evidence payload from SQLite, sends to OpenRouter API (meta-llama/llama-3.3-70b-instruct),
+    validates strict Pydantic JSON response, and persists analysis record.
     """
     inc = db.get_incident_by_id(incident_id)
     if not inc:
         raise HTTPException(status_code=404, detail=f"Incident '{incident_id}' not found.")
 
-    res = AINocAnalyzer.analyze_incident(incident_id)
-    if res.get("status") == "AI_UNAVAILABLE":
-        raise HTTPException(status_code=503, detail=res.get("error", "LM Studio AI service unavailable."))
-    elif res.get("status") == "FAILED":
-        raise HTTPException(status_code=422, detail=res.get("error", "AI RCA JSON validation failed."))
+    res = AIAgentService.analyze_incident(incident_id)
+    if not res.get("success") and res.get("error") == "AI_PROVIDER_UNAVAILABLE":
+        raise HTTPException(status_code=503, detail="OpenRouter AI provider unavailable.")
 
     return res
 
@@ -242,10 +239,11 @@ def get_incident_ai_analysis(incident_id: str):
 
 @router.post("/ai/devices/{device_id}/analyze", status_code=status.HTTP_200_OK)
 def analyze_device_ai(device_id: str):
-    """Triggers AI-assisted device health and risk assessment for a targeted device."""
+    """Triggers OpenRouter AI device health and risk assessment for a targeted device."""
+    from app.services.ai_analyzer import AINocAnalyzer
     res = AINocAnalyzer.analyze_device(device_id)
     if res.get("status") == "AI_UNAVAILABLE":
-        raise HTTPException(status_code=503, detail=res.get("error", "LM Studio AI service unavailable."))
+        raise HTTPException(status_code=503, detail=res.get("error", "AI service unavailable."))
     return res
 
 

@@ -205,11 +205,38 @@ def test_ai_incident_analysis_unavailable():
         assert saved["status"] == "AI_UNAVAILABLE"
 
 
+VALID_OPENROUTER_RCA_JSON = json.dumps({
+    "summary": "Traffic on sfp-sfpplus1 has dropped significantly from historical baseline.",
+    "root_cause": {
+        "description": "Traffic drop of 98.6% observed on sfp-sfpplus1 compared to historical moving average.",
+        "confidence": "HIGH"
+    },
+    "impact": {
+        "description": "Substantial traffic reduction on sfp-sfpplus1.",
+        "scope": "INTERFACE"
+    },
+    "evidence": [
+        {"fact": "current_bps=4144", "source": "metric"},
+        {"fact": "moving_average_bps=296061.82", "source": "metric"}
+    ],
+    "hypotheses": [
+        {"description": "Interface link degradation or upstream traffic shift", "confidence": "MEDIUM"}
+    ],
+    "recommended_actions": [
+        {"step": 1, "action": "Verify interface operational state", "reason": "Inspect link state"}
+    ],
+    "verification_steps": [
+        "Verify /interface print detail output"
+    ],
+    "customer_impact": "UNKNOWN"
+})
+
+
 def test_ai_analysis_api_endpoints():
     """Integration test for Phase 5 REST endpoints."""
     # 1. Health Endpoint
-    mock_health = {"status": "healthy", "provider": "lm_studio", "model": "local-model", "latency_ms": 15}
-    with patch("app.api.endpoints.check_lm_studio_health", return_value=mock_health):
+    mock_health = {"status": "healthy", "provider": "openrouter", "model": "meta-llama/llama-3.3-70b-instruct", "configured": True}
+    with patch("app.api.endpoints.get_openrouter_status", return_value=mock_health):
         response = client.get("/api/ai/health")
         assert response.status_code == 200
         assert response.json()["status"] == "healthy"
@@ -236,11 +263,18 @@ def test_ai_analysis_api_endpoints():
         correlated_event_ids=["evt-root-api"]
     ))
 
-    with patch("app.services.ai_analyzer.generate_lm_studio_completion", return_value=(VALID_LM_STUDIO_RCA_JSON, 90, "local-model")):
+    mock_openrouter = {
+        "success": True,
+        "model": "meta-llama/llama-3.3-70b-instruct",
+        "content": VALID_OPENROUTER_RCA_JSON,
+        "latency_ms": 180,
+        "error": None
+    }
+    with patch("app.ai.agent.generate_openrouter_completion", return_value=mock_openrouter):
         response = client.post("/api/ai/incidents/inc-api-101/analyze")
         assert response.status_code == 200
         data = response.json()
-        assert data["status"] == "COMPLETED"
+        assert data["success"] is True
 
         # 4. Get Incident AI Analysis
         get_resp = client.get("/api/ai/incidents/inc-api-101")
