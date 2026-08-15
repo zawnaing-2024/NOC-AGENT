@@ -329,8 +329,8 @@ class DatabaseManager:
                     role=excluded.role,
                     api_protocol=excluded.api_protocol,
                     api_port=excluded.api_port,
-                    username=excluded.username,
-                    password=CASE WHEN excluded.password != '' AND excluded.password != '[REDACTED]' THEN excluded.password ELSE devices.password END,
+                    username=CASE WHEN excluded.username IS NOT NULL AND excluded.username != '' THEN excluded.username ELSE devices.username END,
+                    password=CASE WHEN excluded.password IS NOT NULL AND excluded.password != '' AND excluded.password != '[REDACTED]' THEN excluded.password ELSE devices.password END,
                     monitoring_enabled=excluded.monitoring_enabled,
                     collection_interval=excluded.collection_interval,
                     monitoring_profile=excluded.monitoring_profile,
@@ -342,8 +342,8 @@ class DatabaseManager:
                     updated_at=excluded.updated_at
             """, (
                 record.device_id, record.name, record.ip_address, record.description or "", record.location or "",
-                record.role or "Router", record.api_protocol or "api", record.api_port or 8728, record.username or "admin",
-                record.password or "", int(record.monitoring_enabled), record.collection_interval or 30,
+                record.role or "Router", record.api_protocol or "api", record.api_port or 8728, record.username,
+                record.password, int(record.monitoring_enabled), record.collection_interval or 30,
                 record.monitoring_profile or "Standard", record.model, record.version, record.status or "HEALTHY",
                 record.last_seen, int(record.is_deleted), record.updated_at
             ))

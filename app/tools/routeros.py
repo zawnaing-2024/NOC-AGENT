@@ -72,7 +72,7 @@ def get_routeros_client(
     """
     selected_router = (router or host or "").lower()
 
-    # Check DB for device credentials if host is specified
+    # Fetch DB device record for custom inventory router lookups
     db_dev = None
     if host:
         try:
@@ -84,24 +84,29 @@ def get_routeros_client(
         except Exception:
             pass
 
-    if db_dev:
+    if username and password:
+        target_host = host or settings.MIKROTIK_HOST
+        target_port = port or settings.MIKROTIK_PORT
+        target_username = username
+        target_password = password
+    elif selected_router == "router1" or host == settings.MIKROTIK_ROUTER1_HOST or host == settings.MIKROTIK_HOST:
+        target_host = settings.MIKROTIK_ROUTER1_HOST or settings.MIKROTIK_HOST
+        target_port = port or settings.MIKROTIK_ROUTER1_PORT or settings.MIKROTIK_PORT
+        target_username = username or settings.MIKROTIK_ROUTER1_USERNAME or settings.MIKROTIK_USERNAME
+        target_password = password or settings.MIKROTIK_ROUTER1_PASSWORD or settings.MIKROTIK_PASSWORD
+    elif selected_router == "router2" or host == settings.MIKROTIK_ROUTER2_HOST:
+        target_host = settings.MIKROTIK_ROUTER2_HOST
+        target_port = port or settings.MIKROTIK_ROUTER2_PORT or settings.MIKROTIK_PORT
+        target_username = username or settings.MIKROTIK_ROUTER2_USERNAME or settings.MIKROTIK_USERNAME
+        target_password = password or settings.MIKROTIK_ROUTER2_PASSWORD or settings.MIKROTIK_PASSWORD
+    elif db_dev:
         target_host = db_dev.get("ip_address") or host
         target_port = port or db_dev.get("api_port") or settings.MIKROTIK_PORT
         target_username = username or db_dev.get("username") or settings.MIKROTIK_USERNAME
         db_pass = db_dev.get("password")
         target_password = password or (db_pass if db_pass and db_pass != "[REDACTED]" else None) or settings.MIKROTIK_PASSWORD
-    elif selected_router == "router2" or host == settings.MIKROTIK_ROUTER2_HOST:
-        target_host = settings.MIKROTIK_ROUTER2_HOST or settings.MIKROTIK_HOST
-        target_port = port or settings.MIKROTIK_ROUTER2_PORT
-        target_username = username or settings.MIKROTIK_ROUTER2_USERNAME
-        target_password = password or settings.MIKROTIK_ROUTER2_PASSWORD
-    elif selected_router == "router1" or host == settings.MIKROTIK_ROUTER1_HOST:
-        target_host = settings.MIKROTIK_ROUTER1_HOST or settings.MIKROTIK_HOST
-        target_port = port or settings.MIKROTIK_ROUTER1_PORT
-        target_username = username or settings.MIKROTIK_ROUTER1_USERNAME
-        target_password = password or settings.MIKROTIK_ROUTER1_PASSWORD
     else:
-        target_host = host or settings.MIKROTIK_ROUTER1_HOST or settings.MIKROTIK_HOST
+        target_host = host or settings.MIKROTIK_HOST
         target_port = port or settings.MIKROTIK_PORT
         target_username = username or settings.MIKROTIK_USERNAME
         target_password = password or settings.MIKROTIK_PASSWORD
