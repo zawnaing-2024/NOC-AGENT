@@ -335,6 +335,14 @@ def perform_cross_domain_investigation_profiled(user_prompt: str) -> Tuple[str, 
 
         # DOMAIN 4: STATIC ROUTING
         elif "route" in prompt_lower or "routing" in prompt_lower or "gateway" in prompt_lower or bool(re.search(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(?:/\d{1,2})?\b", prompt_lower)):
+            specific_target_prefix = None
+            if "default" in prompt_lower or "0.0.0.0/0" in user_prompt or "internet route" in prompt_lower:
+                specific_target_prefix = "0.0.0.0/0"
+            else:
+                cidr_match = re.search(r"\b(?:\d{1,3}\.){3}\d{1,3}/\d{1,2}\b", user_prompt)
+                if cidr_match:
+                    specific_target_prefix = cidr_match.group(0)
+
             t0 = time.perf_counter()
             routes_data = parse_static_routes_data(api, details=True)
             t1 = time.perf_counter()
@@ -342,7 +350,91 @@ def perform_cross_domain_investigation_profiled(user_prompt: str) -> Tuple[str, 
             tools_used.append("get_static_routes")
             tool_profiles.append(ToolCallProfiling(tool="get_static_routes", duration_ms=dur_ms, routeros_ms=dur_ms))
 
-            if routes_data.inactive == 0:
+            if specific_target_prefix:
+                t0 = time.perf_counter()
+                route_detail = parse_single_route_detail(api, specific_target_prefix)
+                t1 = time.perf_counter()
+                dur_ms = max(1, int((t1 - t0) * 1000))
+                tools_used.append("get_route")
+                tool_profiles.append(ToolCallProfiling(tool="get_route", duration_ms=dur_ms, routeros_ms=dur_ms))
+
+                route_found = False
+                matched_routes = []
+                if routes_data.routes:
+                    for r in routes_data.routes:
+                        if r.destination.lower() == specific_target_prefix.lower():
+                            route_found = True
+                            matched_routes.append(r)
+
+                t0 = time.perf_counter()
+                iface_summary = parse_interfaces_data(api, details=False)
+                t1 = time.perf_counter()
+                dur_ms = max(1, int((t1 - t0) * 1000))
+                tools_used.append("get_interfaces")
+                tool_profiles.append(ToolCallProfiling(tool="get_interfaces", duration_ms=dur_ms, routeros_ms=dur_ms))
+
+                link_down_ifaces = iface_summary.summary.link_down_interfaces
+
+                if not route_found:
+                    compact_evidence_dicts.append({
+                        "domain": "STATIC_ROUTE",
+                        "query_target": specific_target_prefix,
+                        "route_found": False,
+                        "anomaly": f"ROUTE_MISSING: No route for {specific_target_prefix} in routing table",
+                        "rca_candidate": "INSUFFICIENT_EVIDENCE",
+                        "explanation": f"No static or dynamic route matching prefix {specific_target_prefix} was found in the routing table."
+                    })
+                elif len(matched_routes) == 1:
+                    r = matched_routes[0]
+                    gw_down = False
+                    if r.interface and link_down_ifaces:
+                        if any(r_if.lower() in d_if.lower() or d_if.lower() in r_if.lower() for d_if in link_down_ifaces for r_if in [r.interface]):
+                            gw_down = True
+
+                    if r.disabled:
+                        rca_cat = "EXPECTED_OR_INTENTIONAL_STATE"
+                        anomaly_str = f"Route {r.destination} is administratively disabled"
+                    elif r.active and not gw_down:
+                        rca_cat = "NO_ANOMALY"
+                        anomaly_str = None
+                    elif not r.active and gw_down:
+                        rca_cat = "NEXT_HOP_UNREACHABLE"
+                        anomaly_str = f"Route {r.destination} inactive via gateway {r.gateway} (interface {r.interface} is LINK_DOWN)"
+                    else:
+                        rca_cat = "INSUFFICIENT_EVIDENCE"
+                        anomaly_str = f"Route {r.destination} inactive, gateway interface active"
+
+                    compact_evidence_dicts.append({
+                        "domain": "STATIC_ROUTE",
+                        "query_target": specific_target_prefix,
+                        "destination": r.destination,
+                        "active": r.active,
+                        "disabled": r.disabled,
+                        "gateway": r.gateway,
+                        "gateway_reachable": (not gw_down),
+                        "interface": r.interface or "unknown",
+                        "distance": r.distance,
+                        "anomaly": anomaly_str,
+                        "rca_candidate": rca_cat
+                    })
+                else:
+                    active_routes = [r for r in matched_routes if r.active]
+                    active_r = active_routes[0] if active_routes else matched_routes[0]
+                    compact_evidence_dicts.append({
+                        "domain": "STATIC_ROUTE",
+                        "query_target": specific_target_prefix,
+                        "destination": specific_target_prefix,
+                        "total_matching_routes": len(matched_routes),
+                        "active_candidate": active_r.destination,
+                        "gateway": active_r.gateway,
+                        "interface": active_r.interface,
+                        "distance": active_r.distance,
+                        "active": active_r.active,
+                        "all_gateways": [r.gateway for r in matched_routes],
+                        "anomaly": None if active_routes else "MULTIPLE_INACTIVE_ROUTES",
+                        "rca_candidate": "NO_ANOMALY" if active_routes else "INSUFFICIENT_EVIDENCE"
+                    })
+            elif routes_data.inactive == 0:
                 compact_evidence_dicts.append({
                     "domain": "STATIC_ROUTE",
                     "total_routes": routes_data.total,
