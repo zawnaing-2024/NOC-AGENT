@@ -2,6 +2,7 @@ import re
 import time
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Optional
 
 from app.config import settings
@@ -120,20 +121,34 @@ def collect_device_telemetry(host: str) -> Dict[str, Any]:
                         if prev_metrics:
                             prev_rec = prev_metrics[0]
                             prev_ts_str = prev_rec.get("timestamp")
-                            prev_rx = float(prev_rec.get("rx_bytes_raw", 0.0) or (prev_rec.get("rx_bps", 0.0) if prev_rec.get("rx_bps", 0.0) > 10000000 else 0.0))
-                            prev_tx = float(prev_rec.get("tx_bytes_raw", 0.0) or (prev_rec.get("tx_bps", 0.0) if prev_rec.get("tx_bps", 0.0) > 10000000 else 0.0))
 
-                            try:
-                                curr_dt = datetime.now(timezone.utc)
-                                prev_dt = datetime.fromisoformat(prev_ts_str)
-                                time_delta = (curr_dt - prev_dt).total_seconds()
+                            prev_rx = None
+                            raw_rx = prev_rec.get("rx_bytes_raw")
+                            if raw_rx is not None and float(raw_rx) > 0:
+                                prev_rx = float(raw_rx)
+                            elif prev_rec.get("rx_bps") is not None and float(prev_rec.get("rx_bps")) > 100000:
+                                prev_rx = float(prev_rec.get("rx_bps"))
 
-                                if time_delta > 0 and prev_rx > 0 and curr_rx_bytes >= prev_rx:
-                                    rx_bps = ((curr_rx_bytes - prev_rx) * 8.0) / time_delta
-                                if time_delta > 0 and prev_tx > 0 and curr_tx_bytes >= prev_tx:
-                                    tx_bps = ((curr_tx_bytes - prev_tx) * 8.0) / time_delta
-                            except Exception:
-                                pass
+                            prev_tx = None
+                            raw_tx = prev_rec.get("tx_bytes_raw")
+                            if raw_tx is not None and float(raw_tx) > 0:
+                                prev_tx = float(raw_tx)
+                            elif prev_rec.get("tx_bps") is not None and float(prev_rec.get("tx_bps")) > 100000:
+                                prev_tx = float(prev_rec.get("tx_bps"))
+
+                            if prev_ts_str:
+                                try:
+                                    curr_dt = datetime.now(timezone.utc)
+                                    prev_dt = datetime.fromisoformat(prev_ts_str.replace("Z", "+00:00"))
+                                    time_delta = (curr_dt - prev_dt).total_seconds()
+
+                                    if time_delta > 0 and time_delta < 300:
+                                        if prev_rx is not None and curr_rx_bytes >= prev_rx:
+                                            rx_bps = ((curr_rx_bytes - prev_rx) * 8.0) / time_delta
+                                        if prev_tx is not None and curr_tx_bytes >= prev_tx:
+                                            tx_bps = ((curr_tx_bytes - prev_tx) * 8.0) / time_delta
+                                except Exception as ex:
+                                    logger.warning(f"Error calculating rate delta for {iface.name}: {ex}")
 
                         db.insert_interface_metric(InterfaceMetricRecord(
                             device_id=device_id,
