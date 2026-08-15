@@ -5,6 +5,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """
     Application configuration settings for MikroTik NOC Agent with OpenRouter API.
+    Supports single or multi-router environments.
     """
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -12,10 +13,23 @@ class Settings(BaseSettings):
         extra="ignore"
     )
 
+    # Primary Router Default Settings
     MIKROTIK_HOST: str = Field(default="192.168.88.1", description="MikroTik Router IP address")
     MIKROTIK_PORT: int = Field(default=8728, description="MikroTik RouterOS API Port")
     MIKROTIK_USERNAME: str = Field(default="admin", description="MikroTik username")
     MIKROTIK_PASSWORD: str = Field(default="", description="MikroTik password")
+
+    # Multi-Router Environment Settings: Router 1
+    MIKROTIK_ROUTER1_HOST: str = Field(default="", description="MikroTik Router 1 IP address")
+    MIKROTIK_ROUTER1_PORT: int = Field(default=8728, description="MikroTik Router 1 API Port")
+    MIKROTIK_ROUTER1_USERNAME: str = Field(default="", description="MikroTik Router 1 username")
+    MIKROTIK_ROUTER1_PASSWORD: str = Field(default="", description="MikroTik Router 1 password")
+
+    # Multi-Router Environment Settings: Router 2
+    MIKROTIK_ROUTER2_HOST: str = Field(default="", description="MikroTik Router 2 IP address")
+    MIKROTIK_ROUTER2_PORT: int = Field(default=8728, description="MikroTik Router 2 API Port")
+    MIKROTIK_ROUTER2_USERNAME: str = Field(default="", description="MikroTik Router 2 username")
+    MIKROTIK_ROUTER2_PASSWORD: str = Field(default="", description="MikroTik Router 2 password")
 
     # OpenRouter API settings
     OPENROUTER_API_KEY: str = Field(default="", description="OpenRouter API Key")
@@ -30,10 +44,9 @@ class Settings(BaseSettings):
     def __repr__(self) -> str:
         """Sanitized representation preventing credential and API key logging."""
         return (
-            f"Settings(MIKROTIK_HOST='{self.MIKROTIK_HOST}', "
-            f"MIKROTIK_PORT={self.MIKROTIK_PORT}, "
-            f"OPENROUTER_MODEL='{self.OPENROUTER_MODEL}', "
-            f"OPENROUTER_TIMEOUT={self.OPENROUTER_TIMEOUT})"
+            f"Settings(ROUTER1='{self.MIKROTIK_ROUTER1_HOST}', "
+            f"ROUTER2='{self.MIKROTIK_ROUTER2_HOST}', "
+            f"OPENROUTER_MODEL='{self.OPENROUTER_MODEL}')"
         )
 
 

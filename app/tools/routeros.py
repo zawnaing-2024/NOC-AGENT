@@ -63,16 +63,30 @@ def get_routeros_client(
     username: str | None = None,
     password: str | None = None,
     timeout: int = 10,
+    router: str | None = None,
 ) -> Generator[Any, None, None]:
     """
     Context manager establishing a safe, short-lived RouterOS API connection.
-    Guarantees clean connection teardown and structured exception handling.
+    Supports multi-router targeting ('router1', 'router2', or specific host IP).
     Never logs credentials.
     """
-    target_host = host or settings.MIKROTIK_HOST
-    target_port = port or settings.MIKROTIK_PORT
-    target_username = username or settings.MIKROTIK_USERNAME
-    target_password = password or settings.MIKROTIK_PASSWORD
+    selected_router = (router or host or "").lower()
+
+    if selected_router == "router2" or host == settings.MIKROTIK_ROUTER2_HOST:
+        target_host = settings.MIKROTIK_ROUTER2_HOST or settings.MIKROTIK_HOST
+        target_port = port or settings.MIKROTIK_ROUTER2_PORT
+        target_username = username or settings.MIKROTIK_ROUTER2_USERNAME
+        target_password = password or settings.MIKROTIK_ROUTER2_PASSWORD
+    elif selected_router == "router1" or host == settings.MIKROTIK_ROUTER1_HOST:
+        target_host = settings.MIKROTIK_ROUTER1_HOST or settings.MIKROTIK_HOST
+        target_port = port or settings.MIKROTIK_ROUTER1_PORT
+        target_username = username or settings.MIKROTIK_ROUTER1_USERNAME
+        target_password = password or settings.MIKROTIK_ROUTER1_PASSWORD
+    else:
+        target_host = host or settings.MIKROTIK_ROUTER1_HOST or settings.MIKROTIK_HOST
+        target_port = port or settings.MIKROTIK_PORT
+        target_username = username or settings.MIKROTIK_USERNAME
+        target_password = password or settings.MIKROTIK_PASSWORD
 
     logger.info(f"Connecting to MikroTik RouterOS at {target_host}:{target_port}")
     api = None
