@@ -247,74 +247,80 @@ document.addEventListener('DOMContentLoaded', () => {
 
   async function renderBgpView(container) {
     const res = await fetch('/api/routing/bgp/overview').then(r => r.json()).catch(() => ({ bgp_peers: [] }));
+    const peers = res.bgp_peers || [];
     container.innerHTML = `
       <div class="table-container">
         <div class="table-header">
-          <div class="table-title">BGP Sessions Dashboard</div>
+          <div class="table-title">BGP Sessions Dashboard (${res.established_count || 0} Established / ${res.down_count || 0} Down)</div>
         </div>
-        <table>
-          <thead>
-            <tr>
-              <th>Device</th>
-              <th>Peer IP</th>
-              <th>Remote Address</th>
-              <th>State</th>
-              <th>Uptime</th>
-              <th>Prefix Count</th>
-              <th>Health</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${res.bgp_peers.map(b => `
+        ${peers.length === 0 ? '<div style="padding:24px; text-align:center; color:var(--text-muted);">No active BGP peer sessions recorded on monitored devices</div>' : `
+          <table>
+            <thead>
               <tr>
-                <td>${b.device_id}</td>
-                <td><strong>${b.peer}</strong></td>
-                <td>${b.remote_address}</td>
-                <td>${b.established ? '<span style="color:var(--status-green)">🟢 ESTABLISHED</span>' : '<span style="color:var(--status-red)">🔴 DOWN</span>'}</td>
-                <td>${b.uptime}</td>
-                <td>${b.prefix_count}</td>
-                <td><span class="status-badge">${b.health}</span></td>
+                <th>Device</th>
+                <th>Peer IP</th>
+                <th>Remote Address</th>
+                <th>State</th>
+                <th>Uptime</th>
+                <th>Prefix Count</th>
+                <th>Health</th>
               </tr>
-            `).join('')}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              ${peers.map(b => `
+                <tr>
+                  <td>${b.device_id}</td>
+                  <td><strong>${b.peer}</strong></td>
+                  <td>${b.remote_address}</td>
+                  <td>${b.established ? '<span style="color:var(--status-green)">🟢 ESTABLISHED</span>' : '<span style="color:var(--status-red)">🔴 DOWN</span>'}</td>
+                  <td>${b.uptime}</td>
+                  <td>${b.prefix_count}</td>
+                  <td><span class="status-badge">${b.health}</span></td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        `}
       </div>
     `;
   }
 
   async function renderOspfView(container) {
     const res = await fetch('/api/routing/ospf/overview').then(r => r.json()).catch(() => ({ ospf_neighbors: [] }));
+    const neighbors = res.ospf_neighbors || [];
     container.innerHTML = `
       <div class="table-container">
         <div class="table-header">
-          <div class="table-title">OSPF Neighbors Dashboard</div>
+          <div class="table-title">OSPF Neighbors Dashboard (${res.full_count || 0} Full / ${res.down_count || 0} Down)</div>
         </div>
-        <table>
-          <thead>
-            <tr>
-              <th>Device</th>
-              <th>Router ID</th>
-              <th>Neighbor IP</th>
-              <th>State</th>
-              <th>Interface</th>
-              <th>Area</th>
-              <th>Health</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${res.ospf_neighbors.map(o => `
+        ${neighbors.length === 0 ? '<div style="padding:24px; text-align:center; color:var(--text-muted);">No active OSPF neighbors recorded on monitored devices</div>' : `
+          <table>
+            <thead>
               <tr>
-                <td>${o.device_id}</td>
-                <td>${o.router_id}</td>
-                <td><strong>${o.neighbor}</strong></td>
-                <td><span style="color:var(--status-green)">🟢 ${o.state}</span></td>
-                <td>${o.interface}</td>
-                <td>${o.area}</td>
-                <td><span class="status-badge">${o.health}</span></td>
+                <th>Device</th>
+                <th>Router ID</th>
+                <th>Neighbor IP</th>
+                <th>State</th>
+                <th>Interface</th>
+                <th>Area</th>
+                <th>Health</th>
               </tr>
-            `).join('')}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              ${neighbors.map(o => `
+                <tr>
+                  <td>${o.device_id}</td>
+                  <td>${o.router_id}</td>
+                  <td><strong>${o.neighbor}</strong></td>
+                  <td><span style="color:var(--status-green)">🟢 ${o.state}</span></td>
+                  <td>${o.interface}</td>
+                  <td>${o.area}</td>
+                  <td><span class="status-badge">${o.health}</span></td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        `}
       </div>
     `;
   }
