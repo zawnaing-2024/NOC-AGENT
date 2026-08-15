@@ -1008,25 +1008,36 @@ def query_interface_ping_test(api_client: Any, destination_ip: str, count: int =
         if not results:
             return {"reachable": False, "destination": destination_ip, "sent": count, "received": 0, "loss_percent": 100.0, "avg_latency_ms": 0.0}
 
-        received = sum(1 for r in results if parse_int_safe(r.get("received"), 0) > 0 or parse_int_safe(r.get("ttl"), 0) > 0)
-        sent = len(results)
-        loss_pct = ((sent - received) / max(1, sent)) * 100.0
-
+        received = 0
         rtts = []
         for r in results:
-            t = str(r.get("time", r.get("avg-rtt", "")))
-            if "ms" in t:
-                rtts.append(parse_float_safe(t.replace("ms", ""), 0.0))
-            elif "us" in t:
-                rtts.append(parse_float_safe(t.replace("us", ""), 0.0) / 1000.0)
+            stat = str(r.get("status", "")).lower()
+            if stat in ["timeout", "packet loss", "host unreachable", "net unreachable"]:
+                continue
 
+            rec_val = parse_int_safe(r.get("received"), 0)
+            ttl_val = parse_int_safe(r.get("ttl"), 0)
+            has_time = "time" in r and r.get("time") is not None
+            has_seq = "seq" in r or "sequence" in r
+
+            if rec_val > 0 or ttl_val > 0 or (has_time and stat != "timeout") or (has_seq and stat == ""):
+                received += 1
+                t = str(r.get("time", r.get("avg-rtt", "")))
+                if "ms" in t:
+                    rtts.append(parse_float_safe(t.replace("ms", ""), 0.0))
+                elif "us" in t:
+                    rtts.append(parse_float_safe(t.replace("us", ""), 0.0) / 1000.0)
+
+        sent = max(len(results), count)
+        loss_pct = ((sent - received) / max(1, sent)) * 100.0
         avg_lat = (sum(rtts) / len(rtts)) if rtts else 0.0
+
         return {
             "reachable": received > 0,
             "destination": destination_ip,
             "sent": sent,
             "received": received,
-            "loss_percent": loss_pct,
+            "loss_percent": round(loss_pct, 1),
             "avg_latency_ms": round(avg_lat, 2)
         }
     except Exception as e:
