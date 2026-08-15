@@ -53,8 +53,12 @@ class Settings(BaseSettings):
     PERSISTENCE_SAMPLES: int = Field(default=3, description="Consecutive low samples required to trigger TRAFFIC_DROP (default 3 samples)")
     METRIC_RETENTION_HOURS: int = Field(default=168, description="Historical metric data retention window in hours (default 168h = 7 days)")
 
-    APP_HOST: str = Field(default="0.0.0.0", description="FastAPI host binding")
-    APP_PORT: int = Field(default=8000, description="FastAPI port binding")
+    # Phase 4.4 Configurable Anomaly Rule Thresholds
+    CPU_SPIKE_MIN_PERCENT: float = Field(default=70.0, description="Minimum CPU percentage to consider CPU spike (default 70%)")
+    CPU_SPIKE_MULTIPLIER: float = Field(default=1.5, description="CPU spike baseline multiplier over moving average (default 1.5x)")
+    MEMORY_SPIKE_MIN_PERCENT: float = Field(default=85.0, description="Minimum Memory percentage to consider Memory spike (default 85%)")
+    INTERFACE_ERROR_THRESHOLD: int = Field(default=5, description="RX/TX error counter delta threshold to trigger INTERFACE_ERROR (default 5)")
+    INTERFACE_DROP_THRESHOLD: int = Field(default=5, description="RX/TX drop counter delta threshold to trigger INTERFACE_DROP (default 5)")
 
     def __repr__(self) -> str:
         """Sanitized representation preventing credential and API key logging."""

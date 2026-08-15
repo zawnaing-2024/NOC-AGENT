@@ -249,3 +249,35 @@ def test_nat_unrelated_down_interface_negative():
     # sfp-sfpplus1 IS running
     events = AnomalyDetector.check_nat_rules("103.59.163.7", nat_rules, running_interfaces=["sfp-sfpplus1"])
     assert len(events) == 0
+
+
+def test_interface_error_counter_increase():
+    """Task 9: Interface error counter delta >= threshold triggers INTERFACE_ERROR."""
+    events = AnomalyDetector.check_interface_status(
+        "103.59.163.7",
+        "sfp-sfpplus1",
+        current_running=True,
+        current_disabled=False,
+        prev_running=True,
+        rx_bps_history=[],
+        errors_history=[10, 2],  # delta = 8 (>= threshold 5)
+    )
+    assert len(events) == 1
+    assert events[0].type == "INTERFACE_ERROR"
+    assert events[0].severity == "WARNING"
+
+
+def test_interface_drop_counter_increase():
+    """Task 9: Interface drop counter delta >= threshold triggers INTERFACE_DROP."""
+    events = AnomalyDetector.check_interface_status(
+        "103.59.163.7",
+        "sfp-sfpplus1",
+        current_running=True,
+        current_disabled=False,
+        prev_running=True,
+        rx_bps_history=[],
+        drops_history=[15, 5],  # delta = 10 (>= threshold 5)
+    )
+    assert len(events) == 1
+    assert events[0].type == "INTERFACE_DROP"
+    assert events[0].severity == "WARNING"

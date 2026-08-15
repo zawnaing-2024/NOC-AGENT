@@ -355,7 +355,16 @@ class AnomalyDetector:
         return events
 
     @staticmethod
-    def check_interface_status(device_id: str, interface_name: str, current_running: bool, current_disabled: bool, prev_running: Optional[bool], rx_bps_history: List[float]) -> List[EventRecord]:
+    def check_interface_status(
+        device_id: str,
+        interface_name: str,
+        current_running: bool,
+        current_disabled: bool,
+        prev_running: Optional[bool],
+        rx_bps_history: List[float],
+        errors_history: Optional[List[int]] = None,
+        drops_history: Optional[List[int]] = None,
+    ) -> List[EventRecord]:
         events: List[EventRecord] = []
         
         # Interface Down Rule (Differentiating ADMIN_DOWN vs UNEXPECTED_DOWN)
@@ -390,6 +399,37 @@ class AnomalyDetector:
                 fingerprint=fp
             ))
 
+        # Counter Rules: INTERFACE_ERROR & INTERFACE_DROP
+        if errors_history and len(errors_history) >= 2:
+            delta_err = errors_history[0] - errors_history[1]
+            if delta_err >= settings.INTERFACE_ERROR_THRESHOLD:
+                fp = generate_fingerprint(device_id, "INTERFACE_ERROR", interface_name)
+                events.append(EventRecord(
+                    event_id=str(uuid.uuid4()),
+                    device_id=device_id,
+                    type="INTERFACE_ERROR",
+                    severity="WARNING",
+                    source="deterministic_engine",
+                    entity=interface_name,
+                    evidence={"interface": interface_name, "delta_errors": delta_err, "current_errors": errors_history[0], "previous_errors": errors_history[1]},
+                    fingerprint=fp
+                ))
+
+        if drops_history and len(drops_history) >= 2:
+            delta_drop = drops_history[0] - drops_history[1]
+            if delta_drop >= settings.INTERFACE_DROP_THRESHOLD:
+                fp = generate_fingerprint(device_id, "INTERFACE_DROP", interface_name)
+                events.append(EventRecord(
+                    event_id=str(uuid.uuid4()),
+                    device_id=device_id,
+                    type="INTERFACE_DROP",
+                    severity="WARNING",
+                    source="deterministic_engine",
+                    entity=interface_name,
+                    evidence={"interface": interface_name, "delta_drops": delta_drop, "current_drops": drops_history[0], "previous_drops": drops_history[1]},
+                    fingerprint=fp
+                ))
+
         # Traffic Drop & Spike Rules (Baseline requirement >= MIN_BASELINE_SAMPLES)
         if rx_bps_history and current_running:
             tr_bl = calculate_baseline(rx_bps_history, min_samples=settings.MIN_BASELINE_SAMPLES)
@@ -422,7 +462,7 @@ class AnomalyDetector:
                         },
                         fingerprint=fp
                     ))
-                elif current_bps > (tr_bl.moving_average * 3.0):
+                elif current_bps > (tr_bl.moving_average * (1.0 + (settings.TRAFFIC_SPIKE_THRESHOLD_PERCENT / 100.0))):
                     fp = generate_fingerprint(device_id, "TRAFFIC_SPIKE", interface_name)
                     events.append(EventRecord(
                         event_id=str(uuid.uuid4()),
