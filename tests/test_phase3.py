@@ -90,6 +90,56 @@ def test_static_routes_all_active_no_anomaly_correlation(mock_get_client):
     assert "NO_ANOMALY" in evidence_text
 
 
+@patch("app.agent.get_routeros_client")
+def test_nat_unrelated_down_interface_negative_correlation(mock_get_client):
+    """Negative test: ether10 is DOWN, but no enabled NAT rule references ether10 -> ether10 MUST NOT appear as anomaly."""
+    mock_api = MagicMock()
+    def path_side_effect(path_str):
+        if "nat" in path_str:
+            return [
+                {".id": "*1", "chain": "srcnat", "action": "masquerade", "out-interface": "sfp-sfpplus1", "disabled": False, "packets": 500}
+            ]
+        elif "interface" in path_str:
+            return [
+                {"name": "ether10", "type": "ether", "running": False, "disabled": False},
+                {"name": "sfp-sfpplus1", "type": "ether", "running": True, "disabled": False},
+            ]
+        return []
+    mock_api.path.side_effect = path_side_effect
+    mock_get_client.return_value.__enter__.return_value = mock_api
+
+    evidence_text, tools_used = perform_cross_domain_investigation("Check NAT status for 103.59.163.7.")
+
+    assert "get_nat_rules" in tools_used
+    assert "get_interfaces" in tools_used
+    assert "ether10" not in evidence_text
+    assert "NO_ANOMALY" in evidence_text
+
+
+@patch("app.agent.get_routeros_client")
+def test_nat_explicit_down_interface_positive_correlation(mock_get_client):
+    """Positive test: Enabled NAT rule out-interface sfp-sfpplus1 is DOWN -> NAT_DEPENDENCY_INTERFACE_DOWN."""
+    mock_api = MagicMock()
+    def path_side_effect(path_str):
+        if "nat" in path_str:
+            return [
+                {".id": "*1", "chain": "srcnat", "action": "masquerade", "out-interface": "sfp-sfpplus1", "disabled": False, "packets": 500}
+            ]
+        elif "interface" in path_str:
+            return [
+                {"name": "sfp-sfpplus1", "type": "ether", "running": False, "disabled": False, "rx-byte": 5000},
+            ]
+        return []
+    mock_api.path.side_effect = path_side_effect
+    mock_get_client.return_value.__enter__.return_value = mock_api
+
+    evidence_text, tools_used = perform_cross_domain_investigation("Check NAT status for 103.59.163.7.")
+
+    assert "get_nat_rules" in tools_used
+    assert "get_interfaces" in tools_used
+    assert "NAT_DEPENDENCY_INTERFACE_DOWN" in evidence_text
+
+
 def test_security_strictly_read_only_tools():
     """Verify that all Phase 3 registered tools are 100% READ-ONLY and contain zero write methods."""
     for t in TOOLS:

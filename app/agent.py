@@ -44,7 +44,7 @@ from app.tools.routeros import (
     get_routeros_client,
     RouterOSError,
 )
-from app.schemas.network import TokenUsage, PerformanceProfiling, ToolCallProfiling
+from app.schemas.network import TokenUsage, PerformanceProfiling, ToolCallProfiling, NatRuleInfo
 
 logger = logging.getLogger("mikrotik_noc_agent.agent")
 
@@ -93,7 +93,7 @@ ANOMALY
 <Detected anomaly or 'None detected.'>
 
 RCA
-<RCA Category: NO_ANOMALY | INSUFFICIENT_EVIDENCE | UPSTREAM_DEPENDENCY | NEXT_HOP_UNREACHABLE | BGP_SESSION_DOWN | OSPF_ADJACENCY_DOWN>
+<RCA Category: NO_ANOMALY | INSUFFICIENT_EVIDENCE | NAT_DEPENDENCY_INTERFACE_DOWN | UPSTREAM_DEPENDENCY | NEXT_HOP_UNREACHABLE | BGP_SESSION_DOWN | OSPF_ADJACENCY_DOWN>
 
 CONFIDENCE
 <HIGH | MEDIUM | LOW>
@@ -285,19 +285,28 @@ def perform_cross_domain_investigation_profiled(user_prompt: str) -> Tuple[str, 
 
             down_ifaces = iface_summary.summary.link_down_interfaces
 
-            matched_dependency_rule = None
-            if nat_data.rules and down_ifaces:
-                for r in nat_data.rules:
-                    if not r.disabled and r.out_interface:
-                        for d_if in down_ifaces:
-                            if r.out_interface.lower() == d_if.lower():
-                                matched_dependency_rule = (r, d_if)
-                                break
-                    if matched_dependency_rule:
+            # 1. Filter ENABLED rules only (ignore disabled rules)
+            enabled_rules = [r for r in (nat_data.rules or []) if not r.disabled]
+
+            # 2. Extract explicitly referenced outbound interfaces from ENABLED rules
+            referenced_outbound_interfaces: List[Tuple[NatRuleInfo, str]] = []
+            for r in enabled_rules:
+                if r.out_interface:
+                    referenced_outbound_interfaces.append((r, r.out_interface))
+
+            # 3. Check if any ENABLED rule's explicitly referenced out-interface is DOWN
+            matched_dependency = None
+            if referenced_outbound_interfaces and down_ifaces:
+                for rule_obj, out_if in referenced_outbound_interfaces:
+                    for d_if in down_ifaces:
+                        if out_if.lower() == d_if.lower():
+                            matched_dependency = (rule_obj, d_if)
+                            break
+                    if matched_dependency:
                         break
 
-            if matched_dependency_rule:
-                rule_obj, d_iface = matched_dependency_rule
+            if matched_dependency:
+                rule_obj, d_iface = matched_dependency
                 compact_evidence_dicts.append({
                     "domain": "NAT",
                     "rules_total": nat_data.total,
@@ -307,28 +316,19 @@ def perform_cross_domain_investigation_profiled(user_prompt: str) -> Tuple[str, 
                     "out_interface": rule_obj.out_interface,
                     "interface_state": "LINK_DOWN",
                     "packets": rule_obj.packets,
-                    "anomaly": f"NAT rule {rule_obj.rule_id} specifies out-interface {rule_obj.out_interface} which is LINK_DOWN",
-                    "rca_candidate": "UPSTREAM_DEPENDENCY",
-                    "explanation": f"Active NAT rule {rule_obj.rule_id} out-interface {rule_obj.out_interface} is LINK_DOWN."
-                })
-            elif down_ifaces:
-                compact_evidence_dicts.append({
-                    "domain": "NAT",
-                    "rules_total": nat_data.total,
-                    "active_rules": nat_data.active,
-                    "disabled_rules": nat_data.disabled,
-                    "down_interfaces": down_ifaces,
-                    "explicit_nat_dependency_found": False,
-                    "anomaly": "UNLINKED_INTERFACE_DOWN",
-                    "rca_candidate": "INSUFFICIENT_EVIDENCE",
-                    "explanation": "Down interface(s) exist, but no active NAT rule explicitly specifies out-interface matching the down interface. Cannot infer NAT dependency from interface state alone."
+                    "anomaly": f"Enabled NAT rule {rule_obj.rule_id} out-interface {rule_obj.out_interface} is LINK_DOWN",
+                    "rca_candidate": "NAT_DEPENDENCY_INTERFACE_DOWN",
+                    "explanation": f"Enabled NAT rule {rule_obj.rule_id} specifies out-interface {rule_obj.out_interface} which is operationally LINK_DOWN."
                 })
             else:
+                # ALL enabled NAT rules reference RUNNING interfaces, or specify no out-interface restriction.
+                # DO NOT mention unrelated down interfaces (e.g. ether10, sfp-sfpplus3, sfp-sfpplus4)!
+                active_outbound_ifaces = list(set([out_if for _, out_if in referenced_outbound_interfaces]))
                 compact_evidence_dicts.append({
                     "domain": "NAT",
-                    "rules_total": nat_data.total,
-                    "active_rules": nat_data.active,
-                    "disabled_rules": nat_data.disabled,
+                    "enabled_srcnat_rules": len(enabled_rules),
+                    "active_interface_dependencies": active_outbound_ifaces if active_outbound_ifaces else ["any_active_egress"],
+                    "outbound_interface_state": "RUNNING",
                     "anomaly": None,
                     "rca_candidate": "NO_ANOMALY"
                 })
