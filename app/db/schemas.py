@@ -42,6 +42,8 @@ class InterfaceMetricRecord(BaseModel):
     tx_errors: int = Field(default=0)
     rx_drops: int = Field(default=0)
     tx_drops: int = Field(default=0)
+    rx_bytes_raw: float = Field(default=0.0)
+    tx_bytes_raw: float = Field(default=0.0)
 
 
 class BgpMetricRecord(BaseModel):

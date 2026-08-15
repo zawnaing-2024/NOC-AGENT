@@ -360,14 +360,21 @@ def get_interfaces_overview(device_id: Optional[str] = Query(default=None)):
                 if i.get("rx_errors", 0) > 0 or i.get("tx_errors", 0) > 0:
                     h_tag = "WARNING"
 
+                rx_val = float(i.get("rx_bps", 0.0))
+                tx_val = float(i.get("tx_bps", 0.0))
+                if rx_val > 100_000_000_000:
+                    rx_val = 0.0
+                if tx_val > 100_000_000_000:
+                    tx_val = 0.0
+
                 interface_list.append({
                     "device_id": dev,
                     "interface_name": ifname,
                     "status": state,
                     "running": i.get("running", 0),
                     "disabled": i.get("disabled", 0),
-                    "rx_bps": i.get("rx_bps", 0.0),
-                    "tx_bps": i.get("tx_bps", 0.0),
+                    "rx_bps": rx_val,
+                    "tx_bps": tx_val,
                     "rx_errors": i.get("rx_errors", 0),
                     "tx_errors": i.get("tx_errors", 0),
                     "rx_drops": i.get("rx_drops", 0),

@@ -83,9 +83,21 @@ class DatabaseManager:
                     rx_errors INTEGER,
                     tx_errors INTEGER,
                     rx_drops INTEGER,
-                    tx_drops INTEGER
+                    tx_drops INTEGER,
+                    rx_bytes_raw REAL DEFAULT 0.0,
+                    tx_bytes_raw REAL DEFAULT 0.0
                 )
             """)
+
+            # Auto-migrate interface_metrics table columns if missing
+            try:
+                cursor.execute("ALTER TABLE interface_metrics ADD COLUMN rx_bytes_raw REAL DEFAULT 0.0")
+            except Exception:
+                pass
+            try:
+                cursor.execute("ALTER TABLE interface_metrics ADD COLUMN tx_bytes_raw REAL DEFAULT 0.0")
+            except Exception:
+                pass
 
             # 4. BGP Metrics
             cursor.execute("""
@@ -292,9 +304,9 @@ class DatabaseManager:
     def insert_interface_metric(self, m: InterfaceMetricRecord) -> None:
         with self.get_connection() as conn:
             conn.execute("""
-                INSERT INTO interface_metrics (timestamp, device_id, interface_name, running, disabled, rx_bps, tx_bps, rx_packets, tx_packets, rx_errors, tx_errors, rx_drops, tx_drops)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (m.timestamp, m.device_id, m.interface_name, int(m.running), int(m.disabled), m.rx_bps, m.tx_bps, m.rx_packets, m.tx_packets, m.rx_errors, m.tx_errors, m.rx_drops, m.tx_drops))
+                INSERT INTO interface_metrics (timestamp, device_id, interface_name, running, disabled, rx_bps, tx_bps, rx_packets, tx_packets, rx_errors, tx_errors, rx_drops, tx_drops, rx_bytes_raw, tx_bytes_raw)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (m.timestamp, m.device_id, m.interface_name, int(m.running), int(m.disabled), m.rx_bps, m.tx_bps, m.rx_packets, m.tx_packets, m.rx_errors, m.tx_errors, m.rx_drops, m.tx_drops, m.rx_bytes_raw, m.tx_bytes_raw))
             conn.commit()
 
     def insert_bgp_metric(self, m: BgpMetricRecord) -> None:

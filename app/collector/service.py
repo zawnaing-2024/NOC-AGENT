@@ -110,19 +110,46 @@ def collect_device_telemetry(host: str) -> Dict[str, Any]:
                 ifaces_data = parse_interfaces_data(api, details=True)
                 if ifaces_data.details:
                     for iface in ifaces_data.details:
+                        curr_rx_bytes = float(iface.rx_bytes)
+                        curr_tx_bytes = float(iface.tx_bytes)
+
+                        prev_metrics = db.get_recent_interface_metrics(device_id, iface.name, limit=1)
+                        rx_bps = 0.0
+                        tx_bps = 0.0
+
+                        if prev_metrics:
+                            prev_rec = prev_metrics[0]
+                            prev_ts_str = prev_rec.get("timestamp")
+                            prev_rx = float(prev_rec.get("rx_bytes_raw", 0.0) or (prev_rec.get("rx_bps", 0.0) if prev_rec.get("rx_bps", 0.0) > 10000000 else 0.0))
+                            prev_tx = float(prev_rec.get("tx_bytes_raw", 0.0) or (prev_rec.get("tx_bps", 0.0) if prev_rec.get("tx_bps", 0.0) > 10000000 else 0.0))
+
+                            try:
+                                curr_dt = datetime.now(timezone.utc)
+                                prev_dt = datetime.fromisoformat(prev_ts_str)
+                                time_delta = (curr_dt - prev_dt).total_seconds()
+
+                                if time_delta > 0 and prev_rx > 0 and curr_rx_bytes >= prev_rx:
+                                    rx_bps = ((curr_rx_bytes - prev_rx) * 8.0) / time_delta
+                                if time_delta > 0 and prev_tx > 0 and curr_tx_bytes >= prev_tx:
+                                    tx_bps = ((curr_tx_bytes - prev_tx) * 8.0) / time_delta
+                            except Exception:
+                                pass
+
                         db.insert_interface_metric(InterfaceMetricRecord(
                             device_id=device_id,
                             interface_name=iface.name,
                             running=iface.running,
                             disabled=iface.disabled,
-                            rx_bps=float(iface.rx_bytes),
-                            tx_bps=float(iface.tx_bytes),
+                            rx_bps=rx_bps,
+                            tx_bps=tx_bps,
                             rx_packets=iface.rx_packets,
                             tx_packets=iface.tx_packets,
                             rx_errors=iface.rx_errors,
                             tx_errors=iface.tx_errors,
                             rx_drops=0,
-                            tx_drops=0
+                            tx_drops=0,
+                            rx_bytes_raw=curr_rx_bytes,
+                            tx_bytes_raw=curr_tx_bytes
                         ))
                         stats["interface_metrics"] += 1
 
