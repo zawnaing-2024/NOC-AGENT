@@ -142,10 +142,12 @@ class CorrelationEngine:
         entity = recovery_event.entity
         base_type = recovery_event.type.replace("_RECOVERED", "_DOWN").replace("_RECOVERED", "_DROP")
 
-        # Mark matching active event as RECOVERED
-        active_evt = db.get_active_event_by_fingerprint(device_id, f"{device_id}:{base_type}:{entity}")
-        if active_evt:
-            db.update_event_status(active_evt["event_id"], "RECOVERED")
+        # Mark matching active events as RESOLVED in database
+        with db.get_connection() as conn:
+            conn.execute(
+                "UPDATE events SET status = 'RESOLVED' WHERE device_id = ? AND type = ? AND status IN ('ACTIVE', 'OPEN')",
+                (device_id, base_type)
+            )
 
         open_inc = db.get_open_incident_by_fingerprint(device_id, f"{device_id}:{base_type}:{entity}")
 

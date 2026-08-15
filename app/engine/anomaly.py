@@ -581,7 +581,7 @@ class AnomalyDetector:
         events: List[EventRecord] = []
 
         # Default Route Down Rule
-        if prev_active is True and current_active is False:
+        if current_active is False and (prev_active is True or prev_active is None):
             fp = generate_fingerprint(device_id, "DEFAULT_ROUTE_DOWN", "0.0.0.0/0")
             events.append(EventRecord(
                 event_id=str(uuid.uuid4()),
@@ -590,12 +590,23 @@ class AnomalyDetector:
                 severity="CRITICAL",
                 source="deterministic_engine",
                 entity="0.0.0.0/0",
-                evidence={"destination": "0.0.0.0/0", "prev_active": True, "current_active": False},
+                evidence={"destination": "0.0.0.0/0", "prev_active": prev_active, "current_active": False},
                 fingerprint=fp
             ))
 
+        # Check if active DEFAULT_ROUTE_DOWN events exist in DB for this device
+        active_down_cnt = 0
+        try:
+            with db.get_connection() as conn:
+                active_down_cnt = conn.execute(
+                    "SELECT COUNT(*) FROM events WHERE device_id = ? AND type = 'DEFAULT_ROUTE_DOWN' AND status IN ('ACTIVE', 'OPEN')",
+                    (device_id,)
+                ).fetchone()[0]
+        except Exception:
+            pass
+
         # Default Route Recovered Rule
-        if prev_active is False and current_active is True:
+        if current_active is True and (prev_active is False or active_down_cnt > 0):
             fp = generate_fingerprint(device_id, "DEFAULT_ROUTE_RECOVERED", "0.0.0.0/0")
             events.append(EventRecord(
                 event_id=str(uuid.uuid4()),
@@ -604,7 +615,7 @@ class AnomalyDetector:
                 severity="INFO",
                 source="deterministic_engine",
                 entity="0.0.0.0/0",
-                evidence={"destination": "0.0.0.0/0", "prev_active": False, "current_active": True},
+                evidence={"destination": "0.0.0.0/0", "prev_active": prev_active, "current_active": True},
                 fingerprint=fp
             ))
 

@@ -332,6 +332,19 @@ class DatabaseManager:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_ai_analyses_incident ON ai_analyses (incident_id)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_ai_analyses_device ON ai_analyses (device_id)")
 
+            # Auto-resolve stale DEFAULT_ROUTE_DOWN events where active default route is verified
+            try:
+                cursor.execute("""
+                    UPDATE events SET status = 'RESOLVED'
+                    WHERE type = 'DEFAULT_ROUTE_DOWN'
+                    AND status IN ('ACTIVE', 'OPEN')
+                    AND device_id IN (
+                        SELECT DISTINCT device_id FROM route_metrics WHERE destination = '0.0.0.0/0' AND active = 1
+                    )
+                """)
+            except Exception:
+                pass
+
             conn.commit()
 
     # --- INSERTS & QUERIES ---
