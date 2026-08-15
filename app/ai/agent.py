@@ -104,7 +104,7 @@ Ensure your response is valid JSON matching this exact structure:
                 "incident_id": incident_id,
                 "status": "AI_UNAVAILABLE",
                 "summary": f"OpenRouter API Error: {err_msg}",
-                "error": f"OpenRouter API Error: {err_msg}",
+                "error": "AI_PROVIDER_UNAVAILABLE",
                 "details": err_msg
             }
 
