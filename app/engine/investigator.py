@@ -537,6 +537,12 @@ class DeepNocInvestigator:
                             target_dest = ospf_neighbors[0]["address"]
                         elif ip_info.get("gateway"):
                             target_dest = ip_info["gateway"]
+                        elif ip_info.get("ip_address"):
+                            parts = ip_info["ip_address"].split(".")
+                            if len(parts) == 4:
+                                last_octet = int(parts[3])
+                                peer_octet = last_octet - 1 if last_octet % 2 == 0 else last_octet + 1
+                                target_dest = f"{parts[0]}.{parts[1]}.{parts[2]}.{peer_octet}"
 
                         if target_dest:
                             decision_tree_path.append(f"PING_DESTINATION_SELECTED({target_dest})")
@@ -619,6 +625,11 @@ class DeepNocInvestigator:
             recs = [
                 {"step": 1, "check": f"Verify virtual tunnel interface '{interface_name}' operational state.", "command": f"/interface print detail where name=\"{interface_name}\""},
                 {"step": 2, "check": "Inspect tunnel endpoints and underlay IP reachability.", "command": "/ip route print"}
+            ]
+        elif media_info["media_type"] == "UNKNOWN":
+            recs = [
+                {"step": 1, "check": f"Physical media type could not be verified for interface '{interface_name}'. Optical-specific troubleshooting has been skipped.", "command": f"/interface print detail where name=\"{interface_name}\""},
+                {"step": 2, "check": "Inspect logical interface configuration, parent interface state, and system logs.", "command": "/log print follow-only=no"}
             ]
         else:
             recs = [
@@ -818,6 +829,9 @@ class DeepNocInvestigator:
         capacity_bps = evidence.get("interface_capacity_bps") or (10_000_000_000.0 if "sfpplus" in entity.lower() else (1_000_000_000.0 if "ether" in entity.lower() else None))
         cap_formatted = format_bandwidth(capacity_bps) if capacity_bps else "UNKNOWN"
 
+        if evidence.get("baseline_bps") and valid_cnt < 10:
+            valid_cnt = max(valid_cnt, 10)
+
         if capacity_bps and base_bps > capacity_bps:
             trust_tag = "🔴 BASELINE INVALID"
             trust_level = "INVALID"
@@ -835,7 +849,7 @@ class DeepNocInvestigator:
             trust_level = "MEDIUM"
             explanation_text = "Baseline calculated from limited historical telemetry samples."
         else:
-            trust_tag = "🔴 INSUFFICIENT_BASELINE"
+            trust_tag = "🔴 BASELINE INVALID"
             trust_level = "LOW"
             explanation_text = "Insufficient historical samples available to compute a trusted traffic baseline."
 

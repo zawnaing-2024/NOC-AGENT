@@ -165,9 +165,7 @@ def test_19_gradual_traffic_drop():
 
 def test_20_ping_success():
     mock_api = MagicMock()
-    mock_p = MagicMock()
-    mock_p.__iter__.return_value = [{"received": "5", "sent": "5", "packet-loss": "0"}]
-    mock_api.path.return_value = mock_p
+    mock_api.path.return_value = lambda *args, **kwargs: [{"received": "5", "sent": "5", "packet-loss": "0"}]
     from app.tools.routeros import query_interface_ping_test
     res = query_interface_ping_test(mock_api, "10.59.190.5")
     assert res["reachable"] is True
@@ -175,9 +173,7 @@ def test_20_ping_success():
 
 def test_21_ping_failure():
     mock_api = MagicMock()
-    mock_p = MagicMock()
-    mock_p.__iter__.return_value = [{"received": "0", "sent": "5", "packet-loss": "100"}]
-    mock_api.path.return_value = mock_p
+    mock_api.path.return_value = lambda *args, **kwargs: [{"received": "0", "sent": "5", "packet-loss": "100"}]
     from app.tools.routeros import query_interface_ping_test
     res = query_interface_ping_test(mock_api, "10.59.190.5")
     assert res["reachable"] is False
