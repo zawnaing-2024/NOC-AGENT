@@ -55,13 +55,21 @@ class DeepNocInvestigator:
         # 2. Build Human-Readable Evidence Table
         evidence_table = DeepNocInvestigator._build_human_readable_evidence(ctx, primary_failure, primary_entity)
 
-        # 3. Construct Cascade Flow Diagram
+        # 3. Phase 6.1 Intelligent Traffic Drop & Interface Deep Investigation
+        traffic_inv = None
+        if "TRAFFIC" in primary_failure or "INTERFACE" in primary_failure:
+            try:
+                traffic_inv = DeepNocInvestigator._investigate_traffic_drop_and_interface(device_id, primary_entity)
+            except Exception as ex:
+                logger.warning(f"Traffic drop deep investigation error for {primary_entity}: {ex}")
+
+        # 4. Construct Cascade Flow Diagram
         visualization_flow = DeepNocInvestigator._build_visualization_flow(primary_failure, primary_entity, correlated_events)
 
-        # 4. Generate Actionable Troubleshooting Checks (Read-Only)
+        # 5. Generate Actionable Troubleshooting Checks (Read-Only)
         recommendations = DeepNocInvestigator._build_recommendations(primary_failure, primary_entity)
 
-        # 5. Invoke OpenRouter AI RCA Analysis (or report unavailable gracefully)
+        # 6. Invoke OpenRouter AI RCA Analysis (or report unavailable gracefully)
         try:
             ai_res = AIAgentService.analyze_incident(incident_id)
             ai_analysis = ai_res.get("analysis") if ai_res.get("success") else None
@@ -83,6 +91,7 @@ class DeepNocInvestigator:
             "primary_failure": f"{primary_failure} on {primary_entity}",
             "secondary_symptoms": secondary_symptoms,
             "evidence": evidence_table,
+            "traffic_investigation": traffic_inv,
             "recommendations": recommendations,
             "visualization_flow": visualization_flow,
             "ai_analysis_status": ai_status,
@@ -265,3 +274,219 @@ class DeepNocInvestigator:
             recs.append({"step": 2, "check": "Check system logs for hardware or network interface events.", "command": "/log print follow-only=no"})
 
         return recs
+
+    @staticmethod
+    def _investigate_traffic_drop_and_interface(device_id: str, interface_name: str) -> Dict[str, Any]:
+        """
+        Phase 6.1 Deterministic Traffic Drop & Interface Root-Cause Investigation:
+        1. Calculates RX & TX bandwidth drop magnitude, percentage, rate of change (SHARP vs GRADUAL), and severity.
+        2. Queries RouterOS API for interface state (running, disabled, link-downs, errors, drops).
+        3. Queries /ip/address to verify if interface has an assigned IP address (HAS_IP = True/False).
+        4. Selects a safe next-hop/peer destination IP and runs RouterOS API ping test.
+        5. Queries optical transceiver Rx/Tx power levels (SFP/SFP+).
+        6. Audits system log entries for link flaps or carrier loss.
+        7. Constructs deterministic decision tree execution path.
+        """
+        from app.tools.routeros import (
+            get_routeros_client,
+            parse_bool_safe,
+            parse_int_safe,
+            query_interface_ip_address,
+            query_interface_ping_test,
+            query_interface_optical_power,
+            query_interface_logs,
+        )
+
+        decision_tree_path = ["START_TRAFFIC_DROP_INVESTIGATION"]
+        
+        # 1. Fetch historical interface metrics from DB for magnitude & time series analysis
+        history = db.get_recent_interface_metrics(device_id, interface_name, limit=50)
+        history.reverse()  # Oldest to newest
+
+        time_series = []
+        rx_values = []
+        tx_values = []
+        for h in history:
+            rx_val = float(h.get("rx_bps") or 0.0)
+            tx_val = float(h.get("tx_bps") or 0.0)
+            rx_values.append(rx_val)
+            tx_values.append(tx_val)
+            time_series.append({
+                "timestamp": h.get("timestamp"),
+                "rx_bps": rx_val,
+                "tx_bps": tx_val,
+                "rx_formatted": format_bandwidth(rx_val),
+                "tx_formatted": format_bandwidth(tx_val)
+            })
+
+        # Calculate RX Traffic Drop Magnitude
+        if len(rx_values) >= 2:
+            prev_rx = rx_values[-2] if len(rx_values) >= 2 else rx_values[0]
+            curr_rx = rx_values[-1]
+            base_rx = sum(rx_values[:-1]) / max(1, len(rx_values) - 1) if len(rx_values) > 1 else prev_rx
+        else:
+            prev_rx = rx_values[0] if rx_values else 0.0
+            curr_rx = rx_values[0] if rx_values else 0.0
+            base_rx = prev_rx
+
+        rx_abs_drop = max(0.0, prev_rx - curr_rx)
+        rx_pct_drop = ((prev_rx - curr_rx) / max(1.0, prev_rx)) * 100.0 if prev_rx > 0 else 0.0
+
+        # Severity Classification
+        if rx_pct_drop >= 80.0: rx_sev = "CRITICAL"
+        elif rx_pct_drop >= 50.0: rx_sev = "SEVERE"
+        elif rx_pct_drop >= 30.0: rx_sev = "MODERATE"
+        elif rx_pct_drop >= 10.0: rx_sev = "SLIGHT"
+        else: rx_sev = "NORMAL"
+
+        # Rate of change: SHARP vs GRADUAL
+        rx_rate_type = "SHARP" if (rx_pct_drop > 50.0 or len(rx_values) <= 3) else "GRADUAL"
+
+        rx_change = {
+            "direction": "RX",
+            "baseline_bps": base_rx,
+            "previous_bps": prev_rx,
+            "current_bps": curr_rx,
+            "absolute_drop_bps": rx_abs_drop,
+            "percentage_drop": round(rx_pct_drop, 2),
+            "severity": rx_sev,
+            "rate_classification": rx_rate_type,
+            "baseline_formatted": format_bandwidth(base_rx),
+            "previous_formatted": format_bandwidth(prev_rx),
+            "current_formatted": format_bandwidth(curr_rx),
+            "drop_formatted": format_bandwidth(rx_abs_drop)
+        }
+
+        # Calculate TX Traffic Drop Magnitude
+        if len(tx_values) >= 2:
+            prev_tx = tx_values[-2] if len(tx_values) >= 2 else tx_values[0]
+            curr_tx = tx_values[-1]
+            base_tx = sum(tx_values[:-1]) / max(1, len(tx_values) - 1) if len(tx_values) > 1 else prev_tx
+        else:
+            prev_tx = tx_values[0] if tx_values else 0.0
+            curr_tx = tx_values[0] if tx_values else 0.0
+            base_tx = prev_tx
+
+        tx_abs_drop = max(0.0, prev_tx - curr_tx)
+        tx_pct_drop = ((prev_tx - curr_tx) / max(1.0, prev_tx)) * 100.0 if prev_tx > 0 else 0.0
+
+        if tx_pct_drop >= 80.0: tx_sev = "CRITICAL"
+        elif tx_pct_drop >= 50.0: tx_sev = "SEVERE"
+        elif tx_pct_drop >= 30.0: tx_sev = "MODERATE"
+        elif tx_pct_drop >= 10.0: tx_sev = "SLIGHT"
+        else: tx_sev = "NORMAL"
+
+        tx_rate_type = "SHARP" if (tx_pct_drop > 50.0 or len(tx_values) <= 3) else "GRADUAL"
+
+        tx_change = {
+            "direction": "TX",
+            "baseline_bps": base_tx,
+            "previous_bps": prev_tx,
+            "current_bps": curr_tx,
+            "absolute_drop_bps": tx_abs_drop,
+            "percentage_drop": round(tx_pct_drop, 2),
+            "severity": tx_sev,
+            "rate_classification": tx_rate_type,
+            "baseline_formatted": format_bandwidth(base_tx),
+            "previous_formatted": format_bandwidth(prev_tx),
+            "current_formatted": format_bandwidth(curr_tx),
+            "drop_formatted": format_bandwidth(tx_abs_drop)
+        }
+
+        decision_tree_path.append("CALCULATE_TRAFFIC_DECREASE")
+
+        # 2. Live RouterOS API Checks
+        iface_state = {"status": "UNKNOWN", "running": False, "disabled": False}
+        ip_info = {"has_ip": False}
+        ping_res = {"reachable": False}
+        optical_info = {"supported": False}
+        recent_logs = []
+
+        try:
+            with get_routeros_client(host=device_id) as api:
+                # A. Query Interface State
+                p_if = api.path("/interface")
+                for item in list(p_if):
+                    if str(item.get("name", "")).lower() == interface_name.lower():
+                        iface_state = {
+                            "name": interface_name,
+                            "type": str(item.get("type", "ether")),
+                            "running": parse_bool_safe(item.get("running"), False),
+                            "disabled": parse_bool_safe(item.get("disabled"), False),
+                            "link_downs": parse_int_safe(item.get("link-downs"), 0),
+                            "rx_bytes": parse_int_safe(item.get("rx-byte", item.get("rx-bytes", 0))),
+                            "tx_bytes": parse_int_safe(item.get("tx-byte", item.get("tx-bytes", 0))),
+                            "rx_errors": parse_int_safe(item.get("rx-error", item.get("rx-errors", 0))),
+                            "tx_errors": parse_int_safe(item.get("tx-error", item.get("tx-errors", 0))),
+                            "rx_drops": parse_int_safe(item.get("rx-drop", item.get("rx-drops", 0))),
+                            "tx_drops": parse_int_safe(item.get("tx-drop", item.get("tx-drops", 0))),
+                            "mac_address": str(item.get("mac-address", "")),
+                            "comment": str(item.get("comment", ""))
+                        }
+                        break
+
+                decision_tree_path.append("CHECK_INTERFACE_STATE")
+
+                # Decision Tree: If link is physical DOWN vs UP
+                if not iface_state.get("running"):
+                    decision_tree_path.append("INTERFACE_STATE_DOWN")
+                    decision_tree_path.append("PHYSICAL_LINK_FAILURE")
+                else:
+                    decision_tree_path.append("INTERFACE_STATE_UP")
+                    # B. Check IP Address
+                    ip_info = query_interface_ip_address(api, interface_name)
+                    if ip_info.get("has_ip"):
+                        decision_tree_path.append("HAS_IP_TRUE")
+                        # C. Find next-hop / BGP peer IP destination for ping test
+                        target_dest = None
+                        bgp_peers = db.get_recent_bgp_metrics(device_id)
+                        if bgp_peers and bgp_peers[0].get("remote_address"):
+                            target_dest = bgp_peers[0]["remote_address"]
+                        elif ip_info.get("ip_address"):
+                            parts = ip_info["ip_address"].split(".")
+                            if len(parts) == 4:
+                                last_octet = int(parts[3])
+                                peer_octet = last_octet - 1 if last_octet % 2 == 0 else last_octet + 1
+                                target_dest = f"{parts[0]}.{parts[1]}.{parts[2]}.{peer_octet}"
+
+                        if target_dest:
+                            decision_tree_path.append(f"PING_DESTINATION_SELECTED({target_dest})")
+                            ping_res = query_interface_ping_test(api, target_dest, count=5)
+                            if ping_res.get("reachable"):
+                                decision_tree_path.append("PING_REACHABLE_OK")
+                            else:
+                                decision_tree_path.append("PING_UNREACHABLE_FAIL")
+                                decision_tree_path.append("L3_CONNECTIVITY_FAILURE")
+                        else:
+                            decision_tree_path.append("NO_VALID_DESTINATION")
+                    else:
+                        decision_tree_path.append("HAS_IP_FALSE")
+                        decision_tree_path.append("L2_INTERFACE_INVESTIGATION")
+
+                # D. Query Optical Power (SFP Transceiver)
+                optical_info = query_interface_optical_power(api, interface_name)
+                if optical_info.get("supported"):
+                    decision_tree_path.append("OPTICAL_POWER_AUDITED")
+
+                # E. Audit System Logs
+                recent_logs = query_interface_logs(api, interface_name, limit=10)
+                if recent_logs:
+                    decision_tree_path.append("ROUTEROS_LOGS_AUDITED")
+
+        except Exception as ex:
+            logger.warning(f"Live RouterOS API checks during investigation encountered exception: {ex}")
+            decision_tree_path.append(f"ROUTEROS_API_EXCEPTION({str(ex)})")
+
+        return {
+            "interface_name": interface_name,
+            "device_id": device_id,
+            "rx_traffic_change": rx_change,
+            "tx_traffic_change": tx_change,
+            "time_series": time_series,
+            "interface_state": iface_state,
+            "ip_investigation": ip_info,
+            "ping_investigation": ping_res,
+            "optical_power": optical_info,
+            "recent_logs": recent_logs,
+            "decision_tree_path": decision_tree_path
+        }

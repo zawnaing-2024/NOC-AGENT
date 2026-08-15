@@ -827,3 +827,106 @@ def get_routing_logs(filter_text: Optional[str] = None) -> str:
     logger.info(f"Executing tool: get_routing_logs (filter_text={filter_text})")
     with get_routeros_client() as api:
         return parse_routing_logs_data(api, filter_text=filter_text).model_dump_json()
+
+
+# --- PHASE 6.1 READ-ONLY ROUTEROS API INVESTIGATION HELPERS ---
+
+def query_interface_ip_address(api_client: Any, interface_name: str) -> Dict[str, Any]:
+    """Queries /ip/address to determine if the specified interface has an assigned IP address."""
+    try:
+        addresses = list(api_client.path("/ip/address"))
+        for a in addresses:
+            if str(a.get("interface", "")).lower() == interface_name.lower():
+                addr_str = str(a.get("address", ""))
+                return {
+                    "has_ip": True,
+                    "ip_address": addr_str.split("/")[0] if "/" in addr_str else addr_str,
+                    "cidr": addr_str,
+                    "network": str(a.get("network", "")),
+                    "comment": str(a.get("comment", ""))
+                }
+    except Exception as e:
+        logger.warning(f"Error querying /ip/address for interface {interface_name}: {e}")
+    return {"has_ip": False, "ip_address": None, "cidr": None, "network": None, "comment": None}
+
+
+def query_interface_ping_test(api_client: Any, destination_ip: str, count: int = 5) -> Dict[str, Any]:
+    """Performs a read-only RouterOS API ping test to a safe next-hop/peer destination IP."""
+    try:
+        p = api_client.path("")
+        results = list(p("ping", address=destination_ip, count=str(count)))
+        if not results:
+            return {"reachable": False, "destination": destination_ip, "sent": count, "received": 0, "loss_percent": 100.0, "avg_latency_ms": 0.0}
+
+        received = sum(1 for r in results if parse_int_safe(r.get("received"), 0) > 0 or parse_int_safe(r.get("ttl"), 0) > 0)
+        sent = len(results)
+        loss_pct = ((sent - received) / max(1, sent)) * 100.0
+
+        rtts = []
+        for r in results:
+            t = str(r.get("time", r.get("avg-rtt", "")))
+            if "ms" in t:
+                rtts.append(parse_float_safe(t.replace("ms", ""), 0.0))
+            elif "us" in t:
+                rtts.append(parse_float_safe(t.replace("us", ""), 0.0) / 1000.0)
+
+        avg_lat = (sum(rtts) / len(rtts)) if rtts else 0.0
+        return {
+            "reachable": received > 0,
+            "destination": destination_ip,
+            "sent": sent,
+            "received": received,
+            "loss_percent": loss_pct,
+            "avg_latency_ms": round(avg_lat, 2)
+        }
+    except Exception as e:
+        logger.warning(f"RouterOS ping test failed for {destination_ip}: {e}")
+        return {"reachable": False, "destination": destination_ip, "sent": count, "received": 0, "loss_percent": 100.0, "avg_latency_ms": 0.0, "error": str(e)}
+
+
+def query_interface_optical_power(api_client: Any, interface_name: str) -> Dict[str, Any]:
+    """Queries /interface/ethernet/monitor to retrieve SFP/SFP+ optical transceiver Rx/Tx power levels."""
+    try:
+        p = api_client.path("/interface/ethernet")
+        res_list = list(p("monitor", numbers=interface_name, once=True))
+        if res_list:
+            m = res_list[0]
+            rx_pow = m.get("sfp-rx-power")
+            tx_pow = m.get("sfp-tx-power")
+            return {
+                "supported": True,
+                "interface": interface_name,
+                "status": str(m.get("status", "unknown")),
+                "rate": str(m.get("rate", "unknown")),
+                "full_duplex": parse_bool_safe(m.get("full-duplex"), True),
+                "sfp_rx_power_dbm": str(rx_pow) if rx_pow is not None else None,
+                "sfp_tx_power_dbm": str(tx_pow) if tx_pow is not None else None,
+                "sfp_rx_loss": parse_bool_safe(m.get("sfp-rx-loss"), False),
+                "sfp_tx_fault": parse_bool_safe(m.get("sfp-tx-fault"), False),
+                "sfp_temperature_c": parse_int_safe(m.get("sfp-temperature"), 0),
+                "sfp_vendor": str(m.get("sfp-vendor-name", ""))
+            }
+    except Exception as e:
+        logger.debug(f"Optical power monitoring unsupported or failed for interface {interface_name}: {e}")
+    return {"supported": False, "interface": interface_name}
+
+
+def query_interface_logs(api_client: Any, interface_name: str, limit: int = 20) -> List[Dict[str, Any]]:
+    """Queries /log for recent events matching the interface name or link down alarms."""
+    matching_logs = []
+    try:
+        logs = list(api_client.path("/log"))
+        target_l = interface_name.lower()
+        for item in logs[-100:]:
+            msg = str(item.get("message", "")).lower()
+            if target_l in msg or "link down" in msg or "carrier lost" in msg:
+                matching_logs.append({
+                    "time": str(item.get("time", "")),
+                    "topics": str(item.get("topics", "")),
+                    "message": str(item.get("message", ""))
+                })
+                if len(matching_logs) >= limit:
+                    break
+    except Exception as e:
+        logger.warning(f"Error querying /log for interface {interface_name}: {e}")
+    return matching_logs

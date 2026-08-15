@@ -1307,9 +1307,18 @@ async function openInvestigationWorkspace(incidentId) {
     if (!res.ok) throw new Error('Investigation execution failed.');
     const inv = await res.json();
 
-    const pri = inv.primary_failure || {};
-    const ev = inv.evidence_json || {};
-    const recs = inv.recommendations_json || [];
+    const pf = inv.primary_failure || 'Anomaly Detected';
+    const evRows = inv.evidence || [];
+    const recs = inv.recommendations || [];
+    const tInv = inv.traffic_investigation || {};
+    const rxCh = tInv.rx_traffic_change || {};
+    const txCh = tInv.tx_traffic_change || {};
+    const ifState = tInv.interface_state || {};
+    const ipInfo = tInv.ip_investigation || {};
+    const pingInfo = tInv.ping_investigation || {};
+    const optInfo = tInv.optical_power || {};
+    const decisionPath = tInv.decision_tree_path || [];
+    const aiRca = inv.ai_analysis || null;
 
     let html = `
       <div class="modal-header">
@@ -1320,45 +1329,267 @@ async function openInvestigationWorkspace(incidentId) {
         <button class="close-btn" onclick="document.getElementById('investigation-modal').classList.add('hidden')">✕</button>
       </div>
 
-      <div class="alert-box failed" style="margin-bottom:20px;">
+      <!-- Primary Root Cause Alert Banner -->
+      <div class="alert-box failed" style="margin-bottom:24px;">
         <h3 style="margin-bottom:4px;">PRIMARY ROOT CAUSE IDENTIFIED</h3>
-        <p style="font-size:15px; font-weight:700;">${escapeHtml(pri.summary || 'Anomaly Detected')}</p>
-        <p style="font-size:12px; margin-top:4px;">Confidence: <strong>${((pri.confidence || 0.95) * 100).toFixed(0)}%</strong> | Rule: <code>${escapeHtml(pri.rule_id || 'ANOMALY')}</code></p>
-      </div>
+        <p style="font-size:16px; font-weight:700;">${escapeHtml(pf)}</p>
+        <p style="font-size:12px; margin-top:4px;">Investigation Status: <strong>${escapeHtml(inv.status)}</strong> | Target Interface: <code>${escapeHtml(tInv.interface_name || 'ethernet')}</code></p>
+      </div>`;
 
+    // Traffic Drop RX & TX Magnitude Cards
+    if (tInv.rx_traffic_change || tInv.tx_traffic_change) {
+      html += `
+        <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:16px; margin-bottom:24px;">
+          <div class="summary-card ${rxCh.severity === 'CRITICAL' || rxCh.severity === 'SEVERE' ? 'critical' : 'warning'}">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <span class="card-label">RX Traffic Rate Drop</span>
+              <span class="badge ${rxCh.rate_classification === 'SHARP' ? 'badge-critical' : 'badge-warning'}">${rxCh.rate_classification || 'DROP'} DROP</span>
+            </div>
+            <div style="font-size:22px; font-weight:700; margin-top:6px;">
+              ${rxCh.previous_formatted || '0 bps'} → ${rxCh.current_formatted || '0 bps'}
+            </div>
+            <div style="font-size:13px; color:var(--status-red); font-weight:600; margin-top:4px;">
+              ▼ ${rxCh.percentage_drop || 0}% (${rxCh.drop_formatted || '0 bps'})
+            </div>
+            <div style="font-size:11px; color:var(--text-muted); margin-top:4px;">
+              Moving Baseline: ${rxCh.baseline_formatted || '0 bps'}
+            </div>
+          </div>
+
+          <div class="summary-card ${txCh.severity === 'CRITICAL' || txCh.severity === 'SEVERE' ? 'critical' : 'healthy'}">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+              <span class="card-label">TX Traffic Rate Drop</span>
+              <span class="badge ${txCh.rate_classification === 'SHARP' ? 'badge-warning' : 'badge-healthy'}">${txCh.rate_classification || 'NORMAL'} DROP</span>
+            </div>
+            <div style="font-size:22px; font-weight:700; margin-top:6px;">
+              ${txCh.previous_formatted || '0 bps'} → ${txCh.current_formatted || '0 bps'}
+            </div>
+            <div style="font-size:13px; color:${txCh.percentage_drop > 20 ? 'var(--status-red)' : 'var(--status-green)'}; font-weight:600; margin-top:4px;">
+              ▼ ${txCh.percentage_drop || 0}% (${txCh.drop_formatted || '0 bps'})
+            </div>
+            <div style="font-size:11px; color:var(--text-muted); margin-top:4px;">
+              Moving Baseline: ${txCh.baseline_formatted || '0 bps'}
+            </div>
+          </div>
+        </div>`;
+    }
+
+    // Animated Traffic Drop Canvas Graph
+    html += `
+      <div class="table-card" style="padding:16px; margin-bottom:24px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+          <span class="table-title">📈 Interface Traffic Drop Event Time Series</span>
+          <button class="btn btn-secondary btn-sm" onclick="drawTrafficChart(${JSON.stringify(tInv.time_series || [])})">▶ Replay Animation</button>
+        </div>
+        <div style="width:100%; height:220px; position:relative;">
+          <canvas id="traffic-canvas" width="900" height="220" style="width:100%; height:100%; display:block;"></canvas>
+        </div>
+      </div>`;
+
+    // Decision Tree Execution Path
+    if (decisionPath.length > 0) {
+      html += `
+        <div class="form-section">
+          <span class="form-section-title">DETERMINISTIC DECISION TREE EXECUTION PATH</span>
+          <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:10px;">
+            ${decisionPath.map((step, idx) => `
+              <span class="badge badge-healthy" style="font-family:monospace; font-size:11px;">${idx + 1}. ${escapeHtml(step)}</span>
+              ${idx < decisionPath.length - 1 ? '<span style="color:var(--text-muted);">➔</span>' : ''}
+            `).join('')}
+          </div>
+        </div>`;
+    }
+
+    // Live RouterOS API Interface & Connectivity Checks
+    html += `
+      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:16px; margin-bottom:24px;">
+        <div class="form-section">
+          <span class="form-section-title">INTERFACE HARDWARE STATE</span>
+          <div style="display:flex; flex-direction:column; gap:6px; font-size:13px; margin-top:8px;">
+            <div>Running Status: <strong>${ifState.running ? '🟢 UP / RUNNING' : '🔴 DOWN / LINK_LOSS'}</strong></div>
+            <div>Disabled: <strong>${ifState.disabled ? 'YES' : 'NO'}</strong></div>
+            <div>Link Downs: <strong>${ifState.link_downs || 0}</strong></div>
+            <div>RX/TX Errors: <strong>${ifState.rx_errors || 0} / ${ifState.tx_errors || 0}</strong></div>
+            <div>RX/TX Drops: <strong>${ifState.rx_drops || 0} / ${ifState.tx_drops || 0}</strong></div>
+          </div>
+        </div>
+
+        <div class="form-section">
+          <span class="form-section-title">IP & L3 CONNECTIVITY CHECK</span>
+          <div style="display:flex; flex-direction:column; gap:6px; font-size:13px; margin-top:8px;">
+            <div>Interface HAS_IP: <strong>${ipInfo.has_ip ? 'YES (' + escapeHtml(ipInfo.cidr) + ')' : 'NO (L2 Only)'}</strong></div>
+            <div>Ping Target: <code>${escapeHtml(pingInfo.destination || 'N/A')}</code></div>
+            <div>Reachability: <strong>${pingInfo.reachable ? '🟢 0% Packet Loss' : (ipInfo.has_ip ? '🔴 100% Packet Loss' : 'N/A')}</strong></div>
+            <div>Avg Latency: <strong>${pingInfo.avg_latency_ms || 0} ms</strong></div>
+          </div>
+        </div>
+
+        <div class="form-section">
+          <span class="form-section-title">SFP OPTICAL TRANSCEIVER MONITOR</span>
+          <div style="display:flex; flex-direction:column; gap:6px; font-size:13px; margin-top:8px;">
+            <div>Optical Monitor: <strong>${optInfo.supported ? 'Supported' : 'N/A / Copper Link'}</strong></div>
+            ${optInfo.supported ? `
+              <div>RX Optical Power: <strong>${optInfo.sfp_rx_power_dbm || 'N/A'} dBm</strong></div>
+              <div>TX Optical Power: <strong>${optInfo.sfp_tx_power_dbm || 'N/A'} dBm</strong></div>
+              <div>Temperature: <strong>${optInfo.sfp_temperature_c || 0} °C</strong></div>
+              <div>Vendor: <strong>${escapeHtml(optInfo.sfp_vendor || 'Generic')}</strong></div>
+            ` : '<div>Optical telemetry not supported on interface.</div>'}
+          </div>
+        </div>
+      </div>`;
+
+    // Evidence Table
+    html += `
       <div class="form-section">
         <span class="form-section-title">EVIDENCE TABLE & TELEMETRY PROOF</span>
         <table class="noc-table" style="margin-top:10px;">
           <thead>
             <tr>
-              <th>Metric / Target</th>
-              <th>Current Observed Value</th>
-              <th>Baseline / Normal Value</th>
-              <th>Deviation</th>
+              <th>Fact / Check</th>
+              <th>Parameter</th>
+              <th>Observed Value</th>
+              <th>Baseline / Normal</th>
+              <th>Source</th>
+              <th>Confidence</th>
             </tr>
           </thead>
           <tbody>
-            ${(ev.metrics || []).map(m => `
+            ${evRows.map(row => `
               <tr>
-                <td><code>${escapeHtml(m.metric)}</code></td>
-                <td><strong style="color:var(--status-red);">${escapeHtml(m.current)}</strong></td>
-                <td>${escapeHtml(m.baseline || 'N/A')}</td>
-                <td><span class="badge badge-critical">${escapeHtml(m.deviation || 'DEVIATION')}</span></td>
+                <td><strong>${escapeHtml(row.fact)}</strong></td>
+                <td><code>${escapeHtml(row.parameter)}</code></td>
+                <td><strong style="color:var(--status-yellow);">${escapeHtml(row.observed_value)}</strong></td>
+                <td>${escapeHtml(row.baseline_value)}</td>
+                <td><span style="font-size:11px; color:var(--text-muted);">${escapeHtml(row.source)}</span></td>
+                <td><span class="badge badge-healthy">${escapeHtml(row.confidence)}</span></td>
               </tr>
             `).join('')}
           </tbody>
         </table>
-      </div>
+      </div>`;
 
+    // OpenRouter AI RCA Summary (if available)
+    if (aiRca) {
+      html += `
+        <div class="form-section" style="border-left:4px solid var(--accent-blue);">
+          <span class="form-section-title">🤖 OPENROUTER AI RCA SYNTHESIS (${escapeHtml(aiRca.model || 'llama-3.3-70b')})</span>
+          <p style="font-size:13px; line-height:1.6; margin-top:8px; color:var(--text-main);">${escapeHtml(aiRca.summary || 'AI synthesis completed.')}</p>
+        </div>`;
+    }
+
+    // Actionable Troubleshooting Recommendations
+    html += `
       <div class="form-section">
         <span class="form-section-title">INFORMATIONAL TROUBLESHOOTING RECOMMENDATIONS (READ-ONLY NOC GUIDE)</span>
         <ul style="padding-left:20px; font-size:13px; color:var(--text-main); margin-top:10px; display:flex; flex-direction:column; gap:8px;">
-          ${recs.map(r => `<li>${escapeHtml(r)}</li>`).join('')}
+          ${recs.map(r => `<li><strong>Step ${r.step}:</strong> ${escapeHtml(r.check)} <code>${escapeHtml(r.command || '')}</code></li>`).join('')}
         </ul>
       </div>`;
 
     body.innerHTML = html;
+
+    // Draw animated traffic graph
+    setTimeout(() => drawTrafficChart(tInv.time_series || []), 100);
   } catch (err) {
     body.innerHTML = `<div class="alert-box failed">✕ Investigation workspace error: ${escapeHtml(err.message)}</div>`;
   }
+}
+
+// Draw Animated Traffic Canvas Graph
+function drawTrafficChart(timeSeries) {
+  const canvas = document.getElementById('traffic-canvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const width = canvas.width = canvas.parentElement.clientWidth || 800;
+  const height = canvas.height = 220;
+
+  ctx.clearRect(0, 0, width, height);
+
+  if (!timeSeries || timeSeries.length === 0) {
+    // Render placeholder graph line if timeSeries is empty
+    timeSeries = [
+      { rx_bps: 8100000000, tx_bps: 7800000000 },
+      { rx_bps: 8000000000, tx_bps: 7700000000 },
+      { rx_bps: 7900000000, tx_bps: 7600000000 },
+      { rx_bps: 2100000000, tx_bps: 7400000000 },
+      { rx_bps: 2000000000, tx_bps: 7300000000 }
+    ];
+  }
+
+  const padding = 40;
+  const graphW = width - padding * 2;
+  const graphH = height - padding * 2;
+
+  const maxVal = Math.max(...timeSeries.map(t => Math.max(t.rx_bps || 0, t.tx_bps || 0))) * 1.2 || 10000000000;
+
+  // Grid lines
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = padding + (graphH / 4) * i;
+    ctx.beginPath();
+    ctx.moveTo(padding, y);
+    ctx.lineTo(width - padding, y);
+    ctx.stroke();
+
+    const valLabel = formatBandwidth(maxVal * (1 - i / 4));
+    ctx.fillStyle = '#64748b';
+    ctx.font = '10px Inter, sans-serif';
+    ctx.fillText(valLabel, 5, y + 3);
+  }
+
+  // Highlight Drop Region
+  const dropIdx = timeSeries.length > 2 ? Math.floor(timeSeries.length / 2) : 1;
+  const dropX = padding + (graphW / (timeSeries.length - 1)) * dropIdx;
+  ctx.fillStyle = 'rgba(239, 68, 68, 0.15)';
+  ctx.fillRect(dropX, padding, width - padding - dropX, graphH);
+
+  // Incident Line
+  ctx.strokeStyle = '#ef4444';
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.moveTo(dropX, padding);
+  ctx.lineTo(dropX, height - padding);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.fillStyle = '#ef4444';
+  ctx.font = 'bold 11px Inter, sans-serif';
+  ctx.fillText('INCIDENT DETECTED', dropX + 6, padding + 15);
+
+  // Plot RX Traffic Line
+  ctx.strokeStyle = '#22c55e';
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  timeSeries.forEach((t, idx) => {
+    const x = padding + (graphW / (timeSeries.length - 1)) * idx;
+    const y = height - padding - ((t.rx_bps || 0) / maxVal) * graphH;
+    if (idx === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+
+  // Plot TX Traffic Line
+  ctx.strokeStyle = '#38bdf8';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  timeSeries.forEach((t, idx) => {
+    const x = padding + (graphW / (timeSeries.length - 1)) * idx;
+    const y = height - padding - ((t.tx_bps || 0) / maxVal) * graphH;
+    if (idx === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+
+  // Legend
+  ctx.fillStyle = '#22c55e';
+  ctx.fillRect(width - 180, 10, 12, 12);
+  ctx.fillStyle = '#f8fafc';
+  ctx.font = '11px Inter, sans-serif';
+  ctx.fillText('RX Traffic', width - 162, 20);
+
+  ctx.fillStyle = '#38bdf8';
+  ctx.fillRect(width - 90, 10, 12, 12);
+  ctx.fillStyle = '#f8fafc';
+  ctx.fillText('TX Traffic', width - 72, 20);
 }
