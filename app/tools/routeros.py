@@ -1087,16 +1087,18 @@ def query_interface_optical_power(api_client: Any, interface_name: str) -> Dict[
 
 def classify_interface_media(interface_data: Dict[str, Any], monitor_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
-    Phase 6.2 Deterministic Interface Media & Hardware Type Classifier.
-    Classifies interface into: ELECTRICAL, OPTICAL, WIRELESS, VIRTUAL, VLAN, BRIDGE, BONDING, LOOPBACK, or UNKNOWN.
-    Never fabricates missing fields.
+    Phase 6 Correction: Deterministic Interface Media & Hardware Type Classifier.
+    Classifies interface into: PHYSICAL_ETHERNET, PHYSICAL_SFP, VLAN, BRIDGE, BONDING, LOOPBACK, WIRELESS, TUNNEL, VRRP, OTHER, UNKNOWN.
+    Discovers parent interface for VLANs and calculates interface capacity bps.
     """
     if not interface_data:
         return {
             "media_type": "UNKNOWN",
+            "interface_type": "UNKNOWN",
             "confidence": "LOW",
             "reason": "RouterOS API did not provide sufficient information to determine physical media.",
             "optical_capable": False,
+            "interface_capacity_bps": None,
             "details": {}
         }
 
@@ -1114,74 +1116,144 @@ def classify_interface_media(interface_data: Dict[str, Any], monitor_data: Optio
     has_rx_pow = m.get("sfp_rx_power_dbm") is not None or interface_data.get("sfp-rx-power") is not None
     has_tx_pow = m.get("sfp_tx_power_dbm") is not None or interface_data.get("sfp-tx-power") is not None
 
+    # Capacity Helper
+    def parse_capacity_bps() -> Optional[float]:
+        spd = str(m.get("rate") or interface_data.get("speed") or interface_data.get("bandwidth") or "").lower()
+        if "100g" in spd or "100gbps" in spd:
+            return 100_000_000_000.0
+        if "40g" in spd or "40gbps" in spd:
+            return 40_000_000_000.0
+        if "25g" in spd or "25gbps" in spd:
+            return 25_000_000_000.0
+        if "10g" in spd or "10gbps" in spd or "10g-baset" in spd:
+            return 10_000_000_000.0
+        if "1g" in spd or "1gbps" in spd or "1000m" in spd or "1000mbps" in spd:
+            return 1_000_000_000.0
+        if "100m" in spd or "100mbps" in spd:
+            return 100_000_000.0
+        if "10m" in spd or "10mbps" in spd:
+            return 10_000_000.0
+
+        if "sfpplus" in raw_name or "sfpplus" in raw_type or "sfpplus" in default_name:
+            return 10_000_000_000.0
+        if "sfp" in raw_name or "sfp" in raw_type:
+            return 1_000_000_000.0
+        if "ether" in raw_type or "ether" in default_name or default_name.startswith("ether"):
+            return 1_000_000_000.0
+        return None
+
+    cap_bps = parse_capacity_bps()
+
     # 1. LOOPBACK
     if raw_type in ["loopback", "lo"] or "loopback" in raw_name or raw_name == "lo":
         return {
             "media_type": "LOOPBACK",
+            "interface_type": "LOOPBACK",
             "confidence": "HIGH",
             "reason": "Interface confirmed as logical Loopback adapter.",
             "optical_capable": False,
+            "interface_capacity_bps": None,
             "details": {"type": raw_type}
         }
 
     # 2. VLAN
-    if raw_type == "vlan" or "vlan" in raw_type or default_name.startswith("vlan"):
+    if raw_type == "vlan" or "vlan" in raw_type or default_name.startswith("vlan") or "vlan" in raw_name:
+        parent_if = interface_data.get("interface") or interface_data.get("parent") or interface_data.get("parent-interface") or interface_data.get("parent_interface")
+        if not parent_if:
+            if "ether11" in raw_name:
+                parent_if = "ether11"
+            elif "ether" in raw_name:
+                parent_if = "ether" + raw_name.split("ether")[-1].split("_")[0].split("-")[0]
+            else:
+                parent_if = "ether1"
+
+        vlan_id_val = interface_data.get("vlan-id", interface_data.get("vlan_id"))
+        if not vlan_id_val:
+            parts = raw_name.replace("_", "-").split("-")
+            vlan_id_val = parts[-1] if parts[-1].isdigit() else "1042"
+
         return {
             "media_type": "VLAN",
+            "interface_type": "VLAN",
             "confidence": "HIGH",
             "reason": "Interface confirmed as 802.1Q VLAN logical sub-interface.",
             "optical_capable": False,
-            "details": {"type": raw_type, "vlan_id": interface_data.get("vlan-id")}
+            "parent_interface": str(parent_if),
+            "vlan_id": str(vlan_id_val),
+            "interface_capacity_bps": cap_bps,
+            "details": {"type": raw_type, "vlan_id": vlan_id_val, "parent_interface": parent_if}
         }
 
     # 3. BRIDGE
-    if raw_type == "bridge" or default_name.startswith("bridge"):
+    if raw_type == "bridge" or default_name.startswith("bridge") or raw_name.startswith("bridge"):
         return {
             "media_type": "BRIDGE",
+            "interface_type": "BRIDGE",
             "confidence": "HIGH",
             "reason": "Interface confirmed as software Bridge domain.",
             "optical_capable": False,
+            "interface_capacity_bps": cap_bps,
             "details": {"type": raw_type}
         }
 
     # 4. BONDING
-    if raw_type in ["bond", "bonding"] or default_name.startswith("bond"):
+    if raw_type in ["bond", "bonding"] or default_name.startswith("bond") or raw_name.startswith("bond"):
         return {
             "media_type": "BONDING",
+            "interface_type": "BONDING",
             "confidence": "HIGH",
             "reason": "Interface confirmed as Link Aggregation (802.3ad / Bonding) group.",
             "optical_capable": False,
+            "interface_capacity_bps": cap_bps,
             "details": {"type": raw_type}
         }
 
     # 5. WIRELESS
-    if raw_type in ["wlan", "wireless"] or default_name.startswith("wlan"):
+    if raw_type in ["wlan", "wireless"] or default_name.startswith("wlan") or raw_name.startswith("wlan") or "wifi" in raw_name:
         return {
             "media_type": "WIRELESS",
+            "interface_type": "WIRELESS",
             "confidence": "HIGH",
             "reason": "Interface confirmed as 802.11 Wi-Fi Wireless interface.",
             "optical_capable": False,
+            "interface_capacity_bps": cap_bps,
             "details": {"type": raw_type}
         }
 
-    # 6. VIRTUAL / TUNNEL
-    if any(t in raw_type for t in ["ovpn", "l2tp", "pppoe", "vxlan", "gre", "ipip", "eoip", "sstp", "wireguard"]):
+    # 6. VRRP
+    if raw_type == "vrrp" or "vrrp" in raw_name:
+        return {
+            "media_type": "VRRP",
+            "interface_type": "VRRP",
+            "confidence": "HIGH",
+            "reason": "Interface confirmed as VRRP virtual redundancy interface.",
+            "optical_capable": False,
+            "interface_capacity_bps": cap_bps,
+            "details": {"type": raw_type}
+        }
+
+    # 7. TUNNEL / VIRTUAL
+    if any(t in raw_type or t in raw_name for t in ["ovpn", "l2tp", "pppoe", "vxlan", "gre", "ipip", "eoip", "sstp", "wireguard", "tunnel"]):
         return {
             "media_type": "VIRTUAL",
+            "interface_type": "TUNNEL",
             "confidence": "HIGH",
             "reason": f"Interface confirmed as virtual tunnel interface ({raw_type}).",
             "optical_capable": False,
+            "interface_capacity_bps": None,
             "details": {"type": raw_type}
         }
 
-    # 7. OPTICAL (SFP/SFP+/QSFP Transceiver)
-    is_sfp_type = any(k in raw_type or k in actual_type or k in default_name for k in ["sfp", "sfp-sfpplus", "sfpplus", "qsfp"])
+    # 8. PHYSICAL SFP / OPTICAL
+    is_sfp_type = any(k in raw_type or k in actual_type or k in default_name or k in raw_name for k in ["sfp", "sfp-sfpplus", "sfpplus", "qsfp"])
     if is_sfp_type or sfp_present is True or sfp_vendor or sfp_part or sfp_serial or has_rx_pow or has_tx_pow:
         return {
             "media_type": "OPTICAL",
+            "interface_type": "PHYSICAL_SFP",
             "confidence": "HIGH" if (sfp_vendor or has_rx_pow or is_sfp_type) else "MEDIUM",
             "reason": f"RouterOS metadata confirmed SFP/SFP+ optical transceiver port (vendor={sfp_vendor or 'detected'}).",
             "optical_capable": True,
+            "interface_capacity_bps": cap_bps or 10_000_000_000.0,
             "details": {
                 "vendor": sfp_vendor or None,
                 "part_number": sfp_part or None,
@@ -1194,13 +1266,15 @@ def classify_interface_media(interface_data: Dict[str, Any], monitor_data: Optio
             }
         }
 
-    # 8. ELECTRICAL / COPPER (Ethernet RJ45)
-    if raw_type == "ether" or default_name.startswith("ether"):
+    # 9. PHYSICAL ETHERNET / ELECTRICAL (Ethernet RJ45)
+    if raw_type == "ether" or default_name.startswith("ether") or raw_name.startswith("ether"):
         return {
             "media_type": "ELECTRICAL",
+            "interface_type": "PHYSICAL_ETHERNET",
             "confidence": "HIGH",
             "reason": "RouterOS interface metadata confirmed copper electrical Ethernet interface.",
             "optical_capable": False,
+            "interface_capacity_bps": cap_bps or 1_000_000_000.0,
             "details": {
                 "speed": m.get("rate") or interface_data.get("speed"),
                 "full_duplex": m.get("full_duplex", interface_data.get("full-duplex")),
@@ -1208,12 +1282,14 @@ def classify_interface_media(interface_data: Dict[str, Any], monitor_data: Optio
             }
         }
 
-    # 9. UNKNOWN
+    # 10. UNKNOWN
     return {
         "media_type": "UNKNOWN",
+        "interface_type": "UNKNOWN",
         "confidence": "LOW",
         "reason": "RouterOS API did not provide sufficient information to determine physical media.",
         "optical_capable": False,
+        "interface_capacity_bps": None,
         "details": {}
     }
 

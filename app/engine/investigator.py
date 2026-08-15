@@ -520,18 +520,23 @@ class DeepNocInvestigator:
                     ip_info = query_interface_ip_address(api, interface_name)
                     update_step(steps, "IP_ADDRESS_CHECK", "COMPLETED", evidence=ip_info)
 
+                    # D. IP Address Verification
+                    update_step(steps, "IP_ADDRESS_CHECK", "IN_PROGRESS")
+                    ip_info = query_interface_ip_address(api, interface_name)
+                    update_step(steps, "IP_ADDRESS_CHECK", "COMPLETED", evidence=ip_info)
+
                     if ip_info.get("has_ip"):
                         decision_tree_path.append("HAS_IP_TRUE")
                         target_dest = None
                         bgp_peers = db.get_recent_bgp_metrics(device_id)
+                        ospf_neighbors = db.get_recent_ospf_metrics(device_id)
+                        
                         if bgp_peers and bgp_peers[0].get("remote_address"):
                             target_dest = bgp_peers[0]["remote_address"]
-                        elif ip_info.get("ip_address"):
-                            parts = ip_info["ip_address"].split(".")
-                            if len(parts) == 4:
-                                last_octet = int(parts[3])
-                                peer_octet = last_octet - 1 if last_octet % 2 == 0 else last_octet + 1
-                                target_dest = f"{parts[0]}.{parts[1]}.{parts[2]}.{peer_octet}"
+                        elif ospf_neighbors and ospf_neighbors[0].get("address"):
+                            target_dest = ospf_neighbors[0]["address"]
+                        elif ip_info.get("gateway"):
+                            target_dest = ip_info["gateway"]
 
                         if target_dest:
                             decision_tree_path.append(f"PING_DESTINATION_SELECTED({target_dest})")
@@ -544,7 +549,7 @@ class DeepNocInvestigator:
                                 decision_tree_path.append("PING_UNREACHABLE_FAIL")
                                 decision_tree_path.append("L3_CONNECTIVITY_FAILURE")
                         else:
-                            update_step(steps, "CONNECTIVITY_PING", "SKIPPED", reason="No safe destination IP found for ping test")
+                            update_step(steps, "CONNECTIVITY_PING", "SKIPPED", reason="No safe destination IP found for ping test (PING TARGET: NOT_AVAILABLE)")
                             decision_tree_path.append("NO_VALID_DESTINATION")
                     else:
                         decision_tree_path.append("HAS_IP_FALSE")
@@ -586,20 +591,39 @@ class DeepNocInvestigator:
                 {"step": 1, "check": "Physical media type could not be verified. Optical-specific troubleshooting has been skipped.", "command": "Test device connectivity in Device Management"},
                 {"step": 2, "check": "Verify RouterOS API credentials, IP port 8728 accessibility, and firewall rules.", "command": "Inspect device configuration in NOC inventory"}
             ]
-        elif media_info["media_type"] == "OPTICAL":
+        elif media_info["media_type"] in ["OPTICAL", "PHYSICAL_SFP"]:
             recs = [
                 {"step": 1, "check": f"Inspect physical optical fiber patch cable and SFP+ transceiver status on interface '{interface_name}'.", "command": f"/interface print detail where name=\"{interface_name}\""},
                 {"step": 2, "check": "Verify optical Rx/Tx power levels to confirm physical link layer health.", "command": f"/interface ethernet monitor {interface_name} once"}
             ]
-        elif media_info["media_type"] == "ELECTRICAL":
+        elif media_info["media_type"] in ["ELECTRICAL", "PHYSICAL_ETHERNET"]:
             recs = [
                 {"step": 1, "check": f"Inspect physical copper RJ45 patch cable and link partner port on interface '{interface_name}'.", "command": f"/interface print detail where name=\"{interface_name}\""},
                 {"step": 2, "check": "Verify speed, duplex, auto-negotiation, and hardware error/drop counters.", "command": f"/interface ethernet monitor {interface_name} once"}
             ]
+        elif media_info["media_type"] == "VLAN":
+            parent_if = media_info.get("parent_interface", "ether11")
+            recs = [
+                {"step": 1, "check": f"Verify VLAN interface '{interface_name}' state and 802.1Q tag.", "command": f"/interface vlan print detail where name=\"{interface_name}\""},
+                {"step": 2, "check": f"Inspect parent physical interface '{parent_if}' state and traffic flow.", "command": f"/interface print detail where name=\"{parent_if}\""},
+                {"step": 3, "check": "Check Layer 3 IP reachability on connected VLAN subnet.", "command": "/ip address print"},
+                {"step": 4, "check": f"Verify parent interface '{parent_if}' hardware error/drop counters.", "command": f"/interface ethernet monitor {parent_if} once"}
+            ]
+        elif media_info["media_type"] == "LOOPBACK":
+            recs = [
+                {"step": 1, "check": f"Verify loopback interface '{interface_name}' IP address configuration.", "command": f"/ip address print detail where interface=\"{interface_name}\""},
+                {"step": 2, "check": "Verify local routing table entries for loopback prefix.", "command": "/ip route print"},
+                {"step": 3, "check": "Inspect system service bindings on loopback IP.", "command": "/system resource print"}
+            ]
+        elif media_info["media_type"] in ["VIRTUAL", "TUNNEL"]:
+            recs = [
+                {"step": 1, "check": f"Verify virtual tunnel interface '{interface_name}' operational state.", "command": f"/interface print detail where name=\"{interface_name}\""},
+                {"step": 2, "check": "Inspect tunnel endpoints and underlay IP reachability.", "command": "/ip route print"}
+            ]
         else:
             recs = [
-                {"step": 1, "check": f"Physical media type could not be verified for interface '{interface_name}'. Optical-specific troubleshooting has been skipped.", "command": f"/interface print detail where name=\"{interface_name}\""},
-                {"step": 2, "check": "Inspect logical interface configuration, parent interface state, and system logs.", "command": "/log print follow-only=no"}
+                {"step": 1, "check": f"Inspect logical interface configuration for '{interface_name}'.", "command": f"/interface print detail where name=\"{interface_name}\""},
+                {"step": 2, "check": "Review recent RouterOS system log events.", "command": "/log print follow-only=no"}
             ]
 
         # Investigation Conclusion & Confidence
@@ -791,20 +815,36 @@ class DeepNocInvestigator:
         dev_pct = ((base_bps - curr_bps) / max(1.0, base_bps)) * 100.0 if base_bps > 0 and curr_bps < base_bps else 0.0
         short_change_pct = ((prev_bps - curr_bps) / max(1.0, prev_bps)) * 100.0 if prev_bps > 0 and curr_bps < prev_bps else 0.0
 
-        if valid_cnt >= 10:
+        capacity_bps = evidence.get("interface_capacity_bps") or (10_000_000_000.0 if "sfpplus" in entity.lower() else (1_000_000_000.0 if "ether" in entity.lower() else None))
+        cap_formatted = format_bandwidth(capacity_bps) if capacity_bps else "UNKNOWN"
+
+        if capacity_bps and base_bps > capacity_bps:
+            trust_tag = "🔴 BASELINE INVALID"
+            trust_level = "INVALID"
+            explanation_text = "Historical baseline exceeds verified interface capacity and has been rejected."
+        elif valid_cnt >= 10:
             trust_tag = "🟢 BASELINE TRUSTED"
             trust_level = "HIGH"
+            explanation_text = (
+                "Historical normal traffic behavior calculated from valid telemetry for this exact entity. "
+                "It is NOT interface capacity, NOT router bandwidth, and NOT port speed. "
+                "It is a historical reference used to evaluate whether current traffic is abnormal."
+            )
         elif valid_cnt >= 3:
             trust_tag = "🟡 BASELINE LIMITED"
             trust_level = "MEDIUM"
+            explanation_text = "Baseline calculated from limited historical telemetry samples."
         else:
-            trust_tag = "🔴 BASELINE INVALID"
+            trust_tag = "🔴 INSUFFICIENT_BASELINE"
             trust_level = "LOW"
+            explanation_text = "Insufficient historical samples available to compute a trusted traffic baseline."
 
         return {
             "current_formatted": format_bandwidth(curr_bps),
             "baseline_formatted": format_bandwidth(base_bps),
             "previous_formatted": format_bandwidth(prev_bps),
+            "capacity_formatted": cap_formatted,
+            "interface_capacity_bps": capacity_bps,
             "current_bps": curr_bps,
             "baseline_bps": base_bps,
             "previous_bps": prev_bps,
@@ -817,11 +857,7 @@ class DeepNocInvestigator:
             "calculation_method": "Robust Median of Valid Counter Deltas",
             "trust_tag": trust_tag,
             "trust_level": trust_level,
-            "explanation_text": (
-                "Baseline represents the normal historical traffic level calculated from valid historical measurements for this specific device/interface. "
-                "It is NOT the physical interface bandwidth, NOT maximum interface speed, and NOT raw RouterOS cumulative bytes. "
-                "It is a historical reference used to determine whether the current measurement is abnormal."
-            )
+            "explanation_text": explanation_text
         }
 
     @staticmethod

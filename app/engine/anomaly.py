@@ -372,6 +372,7 @@ class AnomalyDetector:
         rx_bps_history: List[float],
         errors_history: Optional[List[int]] = None,
         drops_history: Optional[List[int]] = None,
+        interface_capacity_bps: Optional[float] = None,
     ) -> List[EventRecord]:
         events: List[EventRecord] = []
         
@@ -442,6 +443,11 @@ class AnomalyDetector:
         if rx_bps_history and current_running:
             tr_bl = calculate_baseline(rx_bps_history, min_samples=settings.MIN_BASELINE_SAMPLES)
             
+            # Impossible Baseline Protection: reject baseline if it exceeds known interface capacity
+            if interface_capacity_bps and tr_bl.moving_average > interface_capacity_bps:
+                logger.warning(f"BASELINE_INVALID for interface {interface_name}: baseline ({tr_bl.moving_average} bps) > capacity ({interface_capacity_bps} bps)")
+                tr_bl.baseline_status = "BASELINE_INVALID"
+
             # Low Traffic Interfaces Protection: Do NOT create TRAFFIC_DROP if baseline moving average is below MIN_BASELINE_BPS (10 Kbps)
             if tr_bl.baseline_status == "NORMAL" and tr_bl.moving_average >= settings.MIN_BASELINE_BPS:
                 current_bps = rx_bps_history[0]

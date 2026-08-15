@@ -1752,14 +1752,18 @@ async function openEventInvestigationModal(eventId) {
           <span class="badge ${bl.trust_level === 'HIGH' ? 'badge-healthy' : 'badge-warning'}">${escapeHtml(bl.trust_tag || '🟢 BASELINE TRUSTED')}</span>
         </div>
 
-        <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:12px; margin-top:12px;">
+        <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap:12px; margin-top:12px;">
           <div style="background:var(--bg-dark); padding:10px; border-radius:6px; border:1px solid var(--border-color);">
-            <div style="font-size:11px; color:var(--text-muted);">Current Value</div>
+            <div style="font-size:11px; color:var(--text-muted);">Current Traffic</div>
             <div style="font-size:18px; font-weight:700; color:var(--status-yellow);">${bl.current_formatted || '0 bps'}</div>
           </div>
           <div style="background:var(--bg-dark); padding:10px; border-radius:6px; border:1px solid var(--border-color);">
             <div style="font-size:11px; color:var(--text-muted);">Historical Baseline</div>
             <div style="font-size:18px; font-weight:700;">${bl.baseline_formatted || '0 bps'}</div>
+          </div>
+          <div style="background:var(--bg-dark); padding:10px; border-radius:6px; border:1px solid var(--border-color);">
+            <div style="font-size:11px; color:var(--text-muted);">Interface Capacity</div>
+            <div style="font-size:18px; font-weight:700; color:var(--accent-blue);">${bl.capacity_formatted || 'UNKNOWN'}</div>
           </div>
           <div style="background:var(--bg-dark); padding:10px; border-radius:6px; border:1px solid var(--border-color);">
             <div style="font-size:11px; color:var(--text-muted);">Baseline Deviation</div>
