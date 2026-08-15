@@ -449,6 +449,16 @@ def add_device(data: Dict[str, Any]):
         is_deleted=False
     )
     db.upsert_device(rec)
+
+    # Trigger immediate background telemetry collection for instant UI results
+    if rec.monitoring_enabled:
+        try:
+            from app.collector.service import collect_device_telemetry
+            import threading
+            threading.Thread(target=collect_device_telemetry, args=(ip_addr,), daemon=True).start()
+        except Exception as ex:
+            logger.warning(f"Immediate collection trigger error for {ip_addr}: {ex}")
+
     created = db.get_device_by_id(device_id, redact_password=True)
     return {"message": f"Device '{name}' added successfully.", "device": created}
 
@@ -496,6 +506,16 @@ def update_device_endpoint(device_id: str, data: Dict[str, Any]):
         is_deleted=bool(existing.get("is_deleted", False))
     )
     db.upsert_device(rec)
+
+    # Trigger immediate background telemetry collection
+    if mon_enabled:
+        try:
+            from app.collector.service import collect_device_telemetry
+            import threading
+            threading.Thread(target=collect_device_telemetry, args=(ip_addr,), daemon=True).start()
+        except Exception as ex:
+            logger.warning(f"Immediate collection trigger error for {ip_addr}: {ex}")
+
     updated = db.get_device_by_id(device_id, redact_password=True)
     return {"message": f"Device '{name}' updated successfully.", "device": updated}
 
@@ -557,6 +577,15 @@ def test_device_connection(device_id: Optional[str] = None, data: Optional[Dict[
         with get_routeros_client(host=target_host, username=target_user, password=target_pwd, port=target_port) as api:
             res = parse_system_resource(api)
             latency_ms = int((time.time() - start_t) * 1000)
+
+            # Trigger immediate background telemetry collection to update status & metrics
+            try:
+                from app.collector.service import collect_device_telemetry
+                import threading
+                threading.Thread(target=collect_device_telemetry, args=(target_host,), daemon=True).start()
+            except Exception:
+                pass
+
             return {
                 "success": True,
                 "status": "SUCCESSFUL",
