@@ -277,6 +277,11 @@ class DatabaseManager:
 
     # --- QUERY METHODS FOR BASELINE & API ---
 
+    def get_devices(self) -> List[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            rows = conn.execute("SELECT * FROM devices ORDER BY device_id").fetchall()
+            return [dict(r) for r in rows]
+
     def get_recent_device_metrics(self, device_id: str, limit: int = 100) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
             rows = conn.execute("""

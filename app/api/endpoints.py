@@ -8,6 +8,13 @@ logger = logging.getLogger("mikrotik_noc_agent.api")
 router = APIRouter(prefix="/api", tags=["Phase 4 AIOps Telemetry & Incidents"])
 
 
+@router.get("/devices", status_code=status.HTTP_200_OK)
+def get_devices():
+    """Retrieves list of registered MikroTik routers in the system."""
+    devices = db.get_devices()
+    return {"devices": devices, "count": len(devices)}
+
+
 @router.get("/events", status_code=status.HTTP_200_OK)
 def get_events(limit: int = Query(default=100, ge=1, le=1000), device_id: Optional[str] = Query(default=None)):
     """Retrieves list of historical anomaly events."""
