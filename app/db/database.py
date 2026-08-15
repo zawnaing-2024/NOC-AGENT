@@ -118,7 +118,10 @@ class DatabaseManager:
                     rx_drops INTEGER,
                     tx_drops INTEGER,
                     rx_bytes_raw REAL DEFAULT 0.0,
-                    tx_bytes_raw REAL DEFAULT 0.0
+                    tx_bytes_raw REAL DEFAULT 0.0,
+                    telemetry_valid INTEGER DEFAULT 1,
+                    validation_reason TEXT DEFAULT 'VALID',
+                    counter_reset INTEGER DEFAULT 0
                 )
             """)
 
@@ -131,6 +134,28 @@ class DatabaseManager:
                 cursor.execute("ALTER TABLE interface_metrics ADD COLUMN tx_bytes_raw REAL DEFAULT 0.0")
             except Exception:
                 pass
+            try:
+                cursor.execute("ALTER TABLE interface_metrics ADD COLUMN telemetry_valid INTEGER DEFAULT 1")
+            except Exception:
+                pass
+            try:
+                cursor.execute("ALTER TABLE interface_metrics ADD COLUMN validation_reason TEXT DEFAULT 'VALID'")
+            except Exception:
+                pass
+            try:
+                cursor.execute("ALTER TABLE interface_metrics ADD COLUMN counter_reset INTEGER DEFAULT 0")
+            except Exception:
+                pass
+
+            # Phase 6.4 Cleanup Migration: Flag existing corrupted rows (>800 Gbps) as telemetry_valid = 0
+            try:
+                cursor.execute("""
+                    UPDATE interface_metrics
+                    SET telemetry_valid = 0, validation_reason = 'CORRUPTED_CUMULATIVE_BYTE_COUNTER'
+                    WHERE (rx_bps > 800000000000.0 OR tx_bps > 800000000000.0) AND (telemetry_valid IS NULL OR telemetry_valid = 1)
+                """)
+            except Exception as e:
+                logger.warning(f"Failed to auto-clean corrupted traffic metrics: {e}")
 
             # 4. BGP Metrics
             cursor.execute("""
@@ -360,9 +385,18 @@ class DatabaseManager:
     def insert_interface_metric(self, m: InterfaceMetricRecord) -> None:
         with self.get_connection() as conn:
             conn.execute("""
-                INSERT INTO interface_metrics (timestamp, device_id, interface_name, running, disabled, rx_bps, tx_bps, rx_packets, tx_packets, rx_errors, tx_errors, rx_drops, tx_drops, rx_bytes_raw, tx_bytes_raw)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (m.timestamp, m.device_id, m.interface_name, int(m.running), int(m.disabled), m.rx_bps, m.tx_bps, m.rx_packets, m.tx_packets, m.rx_errors, m.tx_errors, m.rx_drops, m.tx_drops, m.rx_bytes_raw, m.tx_bytes_raw))
+                INSERT INTO interface_metrics (
+                    timestamp, device_id, interface_name, running, disabled,
+                    rx_bps, tx_bps, rx_packets, tx_packets, rx_errors, tx_errors,
+                    rx_drops, tx_drops, rx_bytes_raw, tx_bytes_raw,
+                    telemetry_valid, validation_reason, counter_reset
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                m.timestamp, m.device_id, m.interface_name, int(m.running), int(m.disabled),
+                m.rx_bps, m.tx_bps, m.rx_packets, m.tx_packets, m.rx_errors, m.tx_errors,
+                m.rx_drops, m.tx_drops, m.rx_bytes_raw, m.tx_bytes_raw,
+                int(m.telemetry_valid), m.validation_reason, int(m.counter_reset)
+            ))
             conn.commit()
 
     def insert_bgp_metric(self, m: BgpMetricRecord) -> None:
@@ -566,32 +600,37 @@ class DatabaseManager:
         logger.info(f"Purged historical metrics older than {hours}h ({cutoff}): {purged}")
         return purged
 
-    def get_recent_interface_metrics(self, device_id: Optional[str] = None, interface_name: str = "", limit: int = 100, lookback_minutes: Optional[int] = None) -> List[Dict[str, Any]]:
+    def get_recent_interface_metrics(
+        self,
+        device_id: Optional[str] = None,
+        interface_name: str = "",
+        limit: int = 100,
+        lookback_minutes: Optional[int] = None,
+        valid_only: bool = False
+    ) -> List[Dict[str, Any]]:
+        valid_clause = " AND (telemetry_valid IS NULL OR telemetry_valid = 1)" if valid_only else ""
         with self.get_connection() as conn:
             if device_id and not interface_name:
-                rows = conn.execute("SELECT * FROM interface_metrics WHERE device_id = ? ORDER BY id DESC LIMIT ?", (device_id, limit)).fetchall()
+                sql = f"SELECT * FROM interface_metrics WHERE device_id = ?{valid_clause} ORDER BY id DESC LIMIT ?"
+                rows = conn.execute(sql, (device_id, limit)).fetchall()
                 return [dict(r) for r in rows]
             if lookback_minutes:
                 from datetime import datetime, timezone, timedelta
                 cutoff = (datetime.now(timezone.utc) - timedelta(minutes=lookback_minutes)).isoformat()
                 if device_id:
-                    rows = conn.execute("""
-                        SELECT * FROM interface_metrics WHERE device_id = ? AND interface_name = ? AND timestamp >= ? ORDER BY id DESC LIMIT ?
-                    """, (device_id, interface_name, cutoff, limit)).fetchall()
+                    sql = f"SELECT * FROM interface_metrics WHERE device_id = ? AND interface_name = ? AND timestamp >= ?{valid_clause} ORDER BY id DESC LIMIT ?"
+                    rows = conn.execute(sql, (device_id, interface_name, cutoff, limit)).fetchall()
                 else:
-                    rows = conn.execute("""
-                        SELECT * FROM interface_metrics WHERE interface_name = ? AND timestamp >= ? ORDER BY id DESC LIMIT ?
-                    """, (interface_name, cutoff, limit)).fetchall()
+                    sql = f"SELECT * FROM interface_metrics WHERE interface_name = ? AND timestamp >= ?{valid_clause} ORDER BY id DESC LIMIT ?"
+                    rows = conn.execute(sql, (interface_name, cutoff, limit)).fetchall()
                 if rows:
                     return [dict(r) for r in rows]
             if device_id:
-                rows = conn.execute("""
-                    SELECT * FROM interface_metrics WHERE device_id = ? AND interface_name = ? ORDER BY id DESC LIMIT ?
-                """, (device_id, interface_name, limit)).fetchall()
+                sql = f"SELECT * FROM interface_metrics WHERE device_id = ? AND interface_name = ?{valid_clause} ORDER BY id DESC LIMIT ?"
+                rows = conn.execute(sql, (device_id, interface_name, limit)).fetchall()
             else:
-                rows = conn.execute("""
-                    SELECT * FROM interface_metrics WHERE interface_name = ? ORDER BY id DESC LIMIT ?
-                """, (interface_name, limit)).fetchall()
+                sql = f"SELECT * FROM interface_metrics WHERE interface_name = ?{valid_clause} ORDER BY id DESC LIMIT ?"
+                rows = conn.execute(sql, (interface_name, limit)).fetchall()
             return [dict(r) for r in rows]
 
     def get_recent_route_metrics(self, device_id: Optional[str] = None, limit: int = 1000) -> List[Dict[str, Any]]:

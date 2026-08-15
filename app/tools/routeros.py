@@ -1,5 +1,6 @@
 import logging
 import socket
+from datetime import datetime, timezone
 from contextlib import contextmanager
 from typing import Any, Generator, Dict, List, Optional
 import librouteros
@@ -226,6 +227,126 @@ def parse_system_resource(api_client: Any) -> SystemHealth:
         memory_usage_percent=memory_usage_percent,
         status=status,
     )
+
+
+class TrafficRateCalculator:
+    """
+    Phase 6.4 Traffic Rate & Telemetry Sanity Validator:
+    1. Computes bps from cumulative RouterOS rx-byte / tx-byte counter deltas.
+    2. Handles counter resets / router reboots safely (counter_reset=True, rate=0.0).
+    3. Validates elapsed seconds (> 0 and <= 300).
+    4. Validates physical interface capacity (max_valid_bps = speed * 1.10) to reject impossible rates.
+    """
+    _last_samples: Dict[str, Dict[str, Any]] = {}
+
+    @classmethod
+    def reset_history(cls):
+        cls._last_samples.clear()
+
+    @classmethod
+    def calculate_rate(
+        cls,
+        device_id: str,
+        interface_name: str,
+        current_rx_bytes: float,
+        current_tx_bytes: float,
+        current_timestamp: datetime,
+        previous_rx_bytes: Optional[float] = None,
+        previous_tx_bytes: Optional[float] = None,
+        previous_timestamp: Optional[Any] = None,
+        interface_speed_bps: Optional[float] = None
+    ) -> Dict[str, Any]:
+        key = f"{device_id}:{interface_name}"
+
+        prev_rx = previous_rx_bytes
+        prev_tx = previous_tx_bytes
+        prev_ts = previous_timestamp
+
+        if prev_rx is None or prev_ts is None:
+            cache = cls._last_samples.get(key)
+            if cache:
+                prev_rx = cache.get("rx_bytes")
+                prev_tx = cache.get("tx_bytes")
+                prev_ts = cache.get("timestamp")
+
+        cls._last_samples[key] = {
+            "rx_bytes": current_rx_bytes,
+            "tx_bytes": current_tx_bytes,
+            "timestamp": current_timestamp
+        }
+
+        if prev_rx is None or prev_tx is None or prev_ts is None:
+            return {
+                "rx_bps": 0.0,
+                "tx_bps": 0.0,
+                "elapsed_seconds": 0.0,
+                "counter_reset": False,
+                "telemetry_valid": False,
+                "validation_reason": "INITIAL_COUNTER_SAMPLE"
+            }
+
+        if isinstance(prev_ts, str):
+            try:
+                prev_ts = datetime.fromisoformat(prev_ts.replace("Z", "+00:00"))
+            except Exception:
+                return {
+                    "rx_bps": 0.0,
+                    "tx_bps": 0.0,
+                    "elapsed_seconds": 0.0,
+                    "counter_reset": False,
+                    "telemetry_valid": False,
+                    "validation_reason": "INVALID_TIMESTAMP"
+                }
+
+        elapsed_sec = (current_timestamp - prev_ts).total_seconds()
+        if elapsed_sec <= 0 or elapsed_sec > 300:
+            return {
+                "rx_bps": 0.0,
+                "tx_bps": 0.0,
+                "elapsed_seconds": max(0.0, elapsed_sec),
+                "counter_reset": False,
+                "telemetry_valid": False,
+                "validation_reason": "INVALID_TIMESTAMP_DELTA"
+            }
+
+        if current_rx_bytes < prev_rx or current_tx_bytes < prev_tx:
+            return {
+                "rx_bps": 0.0,
+                "tx_bps": 0.0,
+                "elapsed_seconds": elapsed_sec,
+                "counter_reset": True,
+                "telemetry_valid": False,
+                "validation_reason": "COUNTER_RESET"
+            }
+
+        delta_rx = current_rx_bytes - prev_rx
+        delta_tx = current_tx_bytes - prev_tx
+
+        rx_bps = (delta_rx * 8.0) / elapsed_sec
+        tx_bps = (delta_tx * 8.0) / elapsed_sec
+
+        max_limit_bps = 800_000_000_000.0
+        if interface_speed_bps and interface_speed_bps > 0:
+            max_limit_bps = min(max_limit_bps, interface_speed_bps * 1.10)
+
+        if rx_bps > max_limit_bps or tx_bps > max_limit_bps:
+            return {
+                "rx_bps": round(rx_bps, 2),
+                "tx_bps": round(tx_bps, 2),
+                "elapsed_seconds": elapsed_sec,
+                "counter_reset": False,
+                "telemetry_valid": False,
+                "validation_reason": "RATE_EXCEEDS_INTERFACE_CAPACITY"
+            }
+
+        return {
+            "rx_bps": round(rx_bps, 2),
+            "tx_bps": round(tx_bps, 2),
+            "elapsed_seconds": elapsed_sec,
+            "counter_reset": False,
+            "telemetry_valid": True,
+            "validation_reason": "VALID"
+        }
 
 
 def parse_interfaces_data(

@@ -82,9 +82,10 @@ function formatEventMessage(e) {
 
   if (type === 'TRAFFIC_DROP') {
     const curr = formatBandwidth(ev.current_bps || 0);
-    const avg = formatBandwidth(ev.moving_average_bps || 0);
-    const pct = ev.drop_percentage ? ev.drop_percentage.toFixed(1) : '100';
-    return `Traffic dropped ${pct}% on ${entity || 'interface'} (Current: ${curr}, Baseline: ${avg})`;
+    const avg = formatBandwidth(ev.moving_average_bps || ev.baseline_bps || 0);
+    const pct = ev.drop_percentage !== undefined ? parseFloat(ev.drop_percentage).toFixed(1) : (ev.baseline_deviation_percentage ? parseFloat(ev.baseline_deviation_percentage).toFixed(1) : '0');
+    const validTag = (ev.telemetry_valid === false) ? '🔴 INVALID (' + (ev.validation_reason || 'SUSPECTED_CORRUPTION') + ')' : '🟢 VALID';
+    return `Traffic drop on ${entity || 'interface'} | Current: ${curr} | Baseline: ${avg} (▼ ${pct}% below baseline) | Telemetry: ${validTag}`;
   }
   if (type === 'CPU_SPIKE') {
     const cpuVal = ev.current_cpu || ev.cpu_percent || ev.cpu_load || 0;

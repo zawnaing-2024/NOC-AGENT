@@ -56,6 +56,9 @@ class InterfaceMetricRecord(BaseModel):
     tx_drops: int = Field(default=0)
     rx_bytes_raw: float = Field(default=0.0)
     tx_bytes_raw: float = Field(default=0.0)
+    telemetry_valid: bool = Field(default=True)
+    validation_reason: str = Field(default="VALID")
+    counter_reset: bool = Field(default=False)
 
 
 class BgpMetricRecord(BaseModel):

@@ -124,48 +124,40 @@ def collect_device_telemetry(host: str) -> Dict[str, Any]:
                         curr_tx_bytes = float(iface.tx_bytes)
 
                         prev_metrics = db.get_recent_interface_metrics(device_id, iface.name, limit=1)
-                        rx_bps = 0.0
-                        tx_bps = 0.0
+                        prev_rx = None
+                        prev_tx = None
+                        prev_ts = None
 
                         if prev_metrics:
                             prev_rec = prev_metrics[0]
-                            prev_ts_str = prev_rec.get("timestamp")
-
-                            prev_rx = None
+                            prev_ts = prev_rec.get("timestamp")
                             raw_rx = prev_rec.get("rx_bytes_raw")
+                            raw_tx = prev_rec.get("tx_bytes_raw")
                             if raw_rx is not None and float(raw_rx) > 0:
                                 prev_rx = float(raw_rx)
-                            elif prev_rec.get("rx_bps") is not None and float(prev_rec.get("rx_bps")) > 100000:
-                                prev_rx = float(prev_rec.get("rx_bps"))
-
-                            prev_tx = None
-                            raw_tx = prev_rec.get("tx_bytes_raw")
                             if raw_tx is not None and float(raw_tx) > 0:
                                 prev_tx = float(raw_tx)
-                            elif prev_rec.get("tx_bps") is not None and float(prev_rec.get("tx_bps")) > 100000:
-                                prev_tx = float(prev_rec.get("tx_bps"))
 
-                            if prev_ts_str:
-                                try:
-                                    curr_dt = datetime.now(timezone.utc)
-                                    prev_dt = datetime.fromisoformat(prev_ts_str.replace("Z", "+00:00"))
-                                    time_delta = (curr_dt - prev_dt).total_seconds()
-
-                                    if time_delta > 0 and time_delta < 300:
-                                        if prev_rx is not None and curr_rx_bytes >= prev_rx:
-                                            rx_bps = ((curr_rx_bytes - prev_rx) * 8.0) / time_delta
-                                        if prev_tx is not None and curr_tx_bytes >= prev_tx:
-                                            tx_bps = ((curr_tx_bytes - prev_tx) * 8.0) / time_delta
-                                except Exception as ex:
-                                    logger.warning(f"Error calculating rate delta for {iface.name}: {ex}")
+                        now_dt = datetime.now(timezone.utc)
+                        rate_res = TrafficRateCalculator.calculate_rate(
+                            device_id=device_id,
+                            interface_name=iface.name,
+                            current_rx_bytes=curr_rx_bytes,
+                            current_tx_bytes=curr_tx_bytes,
+                            current_timestamp=now_dt,
+                            previous_rx_bytes=prev_rx,
+                            previous_tx_bytes=prev_tx,
+                            previous_timestamp=prev_ts,
+                            interface_speed_bps=None
+                        )
 
                         db.insert_interface_metric(InterfaceMetricRecord(
                             device_id=device_id,
                             interface_name=iface.name,
                             running=iface.running,
                             disabled=iface.disabled,
-                            rx_bps=rx_bps,
-                            tx_bps=tx_bps,
+                            rx_bps=rate_res["rx_bps"],
+                            tx_bps=rate_res["tx_bps"],
                             rx_packets=iface.rx_packets,
                             tx_packets=iface.tx_packets,
                             rx_errors=iface.rx_errors,
@@ -173,21 +165,28 @@ def collect_device_telemetry(host: str) -> Dict[str, Any]:
                             rx_drops=0,
                             tx_drops=0,
                             rx_bytes_raw=curr_rx_bytes,
-                            tx_bytes_raw=curr_tx_bytes
+                            tx_bytes_raw=curr_tx_bytes,
+                            telemetry_valid=rate_res["telemetry_valid"],
+                            validation_reason=rate_res["validation_reason"],
+                            counter_reset=rate_res["counter_reset"]
                         ))
                         stats["interface_metrics"] += 1
 
-                        iface_hist = db.get_recent_interface_metrics(device_id, iface.name, limit=50)
-                        prev_running = bool(iface_hist[1]["running"]) if len(iface_hist) > 1 else None
-                        rx_bps_hist = [r["rx_bps"] for r in iface_hist]
+                        iface_hist = db.get_recent_interface_metrics(device_id, iface.name, limit=50, valid_only=True)
+                        rx_bps_hist = [float(m["rx_bps"]) for m in iface_hist if m.get("rx_bps") is not None]
+                        err_hist = [int(m["rx_errors"]) for m in iface_hist if m.get("rx_errors") is not None]
+                        
+                        prev_run = bool(iface_hist[1]["running"]) if len(iface_hist) > 1 else None
 
                         events.extend(AnomalyDetector.check_interface_status(
                             device_id=device_id,
                             interface_name=iface.name,
                             current_running=iface.running,
                             current_disabled=iface.disabled,
-                            prev_running=prev_running,
-                            rx_bps_history=rx_bps_hist
+                            prev_running=prev_run,
+                            rx_bps_history=rx_bps_hist,
+                            errors_history=err_hist,
+                            drops_history=None
                         ))
             except Exception as e:
                 logger.error(f"Interface metrics collection error for {device_id}: {e}")

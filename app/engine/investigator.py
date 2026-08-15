@@ -6,6 +6,7 @@ from typing import Dict, Any, List, Optional
 from pydantic import BaseModel, Field
 
 from app.db.database import db
+from app.engine.baseline import calculate_baseline
 from app.ai.context_builder import ContextBuilder
 from app.ai.agent import AIAgentService
 
@@ -55,18 +56,20 @@ def update_step(steps: List[Dict[str, Any]], step_id: str, status: str, evidence
 
 def calculate_traffic_direction_and_deviation(direction: str, values: List[float]) -> Dict[str, Any]:
     """
-    Phase 6.3 Traffic Change Math:
-    Calculates sample-to-sample short-term change (previous -> current) AND baseline deviation (current vs baseline) independently.
-    Handles direction (INCREASE vs DROP vs NO_CHANGE) accurately without confusing short-term rate with baseline.
+    Phase 6.4 Traffic Change Math:
+    Calculates sample-to-sample short-term change (previous -> current) AND robust baseline deviation (current vs median baseline) independently over validated samples.
     """
-    if len(values) >= 2:
-        prev_val = values[-2]
-        curr_val = values[-1]
-        base_val = sum(values[:-1]) / max(1, len(values) - 1)
-    elif len(values) == 1:
-        prev_val = values[0]
-        curr_val = values[0]
-        base_val = values[0]
+    valid_vals = [v for v in values if v is not None and 0.0 <= v <= 800_000_000_000.0]
+
+    if len(valid_vals) >= 2:
+        prev_val = valid_vals[-2]
+        curr_val = valid_vals[-1]
+        bl_res = calculate_baseline(valid_vals[:-1], min_samples=1)
+        base_val = bl_res.moving_average
+    elif len(valid_vals) == 1:
+        prev_val = valid_vals[0]
+        curr_val = valid_vals[0]
+        base_val = valid_vals[0]
     else:
         prev_val = 0.0
         curr_val = 0.0
@@ -89,7 +92,7 @@ def calculate_traffic_direction_and_deviation(direction: str, values: List[float
         pct_change = 0.0
         short_term_formatted = "● 0.00% (0 bps)"
 
-    # 2. Baseline Deviation (current vs moving baseline)
+    # 2. Baseline Deviation (current vs median baseline)
     if curr_val < base_val:
         base_dev_pct = ((base_val - curr_val) / max(1.0, base_val)) * 100.0
         base_dev_formatted = f"▼ {base_dev_pct:.2f}% BELOW BASELINE"
@@ -111,7 +114,7 @@ def calculate_traffic_direction_and_deviation(direction: str, values: List[float
     else:
         severity = "NORMAL"
 
-    rate_class = "SHARP" if (pct_change > 50.0 or len(values) <= 3) else "GRADUAL"
+    rate_class = "SHARP" if (pct_change > 50.0 or len(valid_vals) <= 3) else "GRADUAL"
 
     return {
         "direction": direction,
@@ -406,8 +409,8 @@ class DeepNocInvestigator:
 
         decision_tree_path = ["START_TRAFFIC_DROP_INVESTIGATION"]
 
-        # 1. Fetch historical interface metrics from DB for magnitude & time series analysis
-        history = db.get_recent_interface_metrics(device_id, interface_name, limit=50)
+        # 1. Fetch historical interface metrics from DB for magnitude & time series analysis (filtering valid samples only)
+        history = db.get_recent_interface_metrics(device_id, interface_name, limit=50, valid_only=True)
         history.reverse()  # Oldest to newest
 
         time_series = []
