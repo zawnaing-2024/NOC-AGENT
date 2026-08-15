@@ -297,7 +297,7 @@ def run_manual_collection() -> Dict[str, Any]:
 
 async def collector_loop() -> None:
     """Async background task executing telemetry collection every COLLECTOR_INTERVAL_SECONDS."""
-    logger.info(f"Starting AIOps Background Telemetry Collector (interval={settings.COLLECTOR_INTERVAL_SECONDS}s)...")
+    logger.info(f"COLLECTOR_START timestamp={time.time()} interval={settings.COLLECTOR_INTERVAL_SECONDS}s database_path={settings.DATABASE_PATH}")
     
     hosts_to_collect = []
     if settings.MIKROTIK_ROUTER1_HOST:
@@ -309,10 +309,12 @@ async def collector_loop() -> None:
 
     while True:
         try:
+            logger.info(f"COLLECTOR_TICK timestamp={time.time()} database_path={settings.DATABASE_PATH} targets={hosts_to_collect}")
             for target_host in hosts_to_collect:
                 # Execute blocking RouterOS polling in thread pool to avoid blocking asyncio event loop
-                await asyncio.to_thread(collect_device_telemetry, target_host)
+                res = await asyncio.to_thread(collect_device_telemetry, target_host)
+                logger.info(f"COLLECTOR_WRITE timestamp={time.time()} device_id={target_host} database_path={settings.DATABASE_PATH} metrics_wrote={res}")
         except Exception as e:
-            logger.error(f"Error in background collector loop: {e}")
+            logger.error(f"COLLECTOR_ERROR timestamp={time.time()} database_path={settings.DATABASE_PATH} error={e}")
         
         await asyncio.sleep(settings.COLLECTOR_INTERVAL_SECONDS)
