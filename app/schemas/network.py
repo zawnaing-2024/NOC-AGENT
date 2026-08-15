@@ -122,6 +122,7 @@ class StaticRouteInfo(BaseModel):
     distance: int = Field(default=1, description="Route administrative distance")
     active: bool = Field(default=True, description="Whether route is active in RIB")
     disabled: bool = Field(default=False, description="Whether route is administratively disabled")
+    inactive: bool = Field(default=False, description="Whether route is inactive in RIB")
 
 
 class StaticRoutesResponse(BaseModel):

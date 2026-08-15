@@ -509,9 +509,14 @@ def parse_static_routes_data(api_client: Any, details: bool = False) -> StaticRo
         iface = item.get("immediate-gw", item.get("gateway-status"))
         iface_str = str(iface) if iface else None
         
-        active = parse_bool_safe(item.get("active"), True)
-        disabled = parse_bool_safe(item.get("disabled"), False)
+        raw_active = parse_bool_safe(item.get("active"), False)
+        is_disabled = parse_bool_safe(item.get("disabled"), False)
+        is_inactive = parse_bool_safe(item.get("inactive"), False)
         distance = parse_int_safe(item.get("distance"), 1)
+
+        active = raw_active and not is_disabled and not is_inactive
+        disabled = is_disabled
+        inactive = is_inactive or (not active and not disabled)
 
         if disabled:
             disabled_cnt += 1
@@ -530,6 +535,7 @@ def parse_static_routes_data(api_client: Any, details: bool = False) -> StaticRo
                     distance=distance,
                     active=active,
                     disabled=disabled,
+                    inactive=inactive,
                 )
             )
 

@@ -771,22 +771,29 @@ def get_routing_overview():
     total_routes = 0
     active_cnt = 0
     inactive_cnt = 0
+    disabled_cnt = 0
 
     for d in devices:
         dev_id = d["device_id"]
-        total_routes += db.get_device_route_count(dev_id)
-        rm = db.get_recent_route_metrics(dev_id, limit=500)
-        seen_dest = set()
+        rm = db.get_recent_route_metrics(dev_id, limit=2000)
+        seen_routes = set()
         for r in rm:
-            dst = r.get("destination")
-            if dst not in seen_dest:
-                seen_dest.add(dst)
-                if r.get("active") == 1:
+            route_key = (r.get("destination"), r.get("gateway"), r.get("distance"))
+            if route_key not in seen_routes:
+                seen_routes.add(route_key)
+                total_routes += 1
+                is_act = (r.get("active") == 1 or r.get("active") is True)
+                if is_act:
                     active_cnt += 1
                 else:
                     inactive_cnt += 1
-                if dst in ["0.0.0.0/0", "default"] and r.get("active") == 0:
-                    def_route_active = False
+
+        has_active_default = any(
+            (r.get("active") == 1 or r.get("active") is True) and r.get("destination") in ["0.0.0.0/0", "default"]
+            for r in rm
+        )
+        if rm and not has_active_default:
+            def_route_active = False
 
     return {
         "default_route_status": "HEALTHY" if def_route_active else "CRITICAL",
