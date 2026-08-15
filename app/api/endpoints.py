@@ -84,6 +84,20 @@ def get_event_detail(event_id: str):
     return event
 
 
+@router.get("/events/{event_id}/investigation", status_code=status.HTTP_200_OK)
+def get_event_investigation_endpoint(event_id: str):
+    """Triggers and retrieves deterministic NOC Event Investigation payload for an event."""
+    evt = db.get_event_by_id(event_id)
+    if not evt:
+        raise HTTPException(status_code=404, detail=f"Event '{event_id}' not found.")
+
+    res = DeepNocInvestigator.run_event_investigation(event_id)
+    if res.get("status") == "FAILED":
+        raise HTTPException(status_code=500, detail=res.get("error", "Event investigation failed."))
+
+    return res
+
+
 @router.get("/incidents", status_code=status.HTTP_200_OK)
 def get_incidents(
     limit: int = Query(default=50, ge=1, le=500),

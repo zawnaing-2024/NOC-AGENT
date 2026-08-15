@@ -1207,27 +1207,38 @@ async function renderEventsView(container) {
             <th>Severity</th>
             <th>Device</th>
             <th>Event Type</th>
-            <th>Target Metric</th>
-            <th>Message</th>
+            <th>Target</th>
+            <th>Current Value</th>
+            <th>Baseline</th>
+            <th>Deviation</th>
+            <th>Status</th>
             <th>Timestamp</th>
           </tr>
         </thead>
         <tbody>`;
 
   if (events.length === 0) {
-    html += `<tr><td colspan="6" style="text-align:center; padding:24px; color:var(--text-muted);">No telemetry events recorded.</td></tr>`;
+    html += `<tr><td colspan="9" style="text-align:center; padding:24px; color:var(--text-muted);">No telemetry events recorded.</td></tr>`;
   } else {
     events.forEach(e => {
       const eventType = e.type || e.event_type || 'ANOMALY';
       const targetEntity = e.entity || e.metric_name || 'System';
-      const msg = formatEventMessage(e);
+      const ev = e.evidence || {};
+      const currVal = ev.current_bps ? formatBandwidth(ev.current_bps) : (e.value !== undefined ? String(e.value) : '—');
+      const baseVal = ev.baseline_bps ? formatBandwidth(ev.baseline_bps) : (ev.moving_average_bps ? formatBandwidth(ev.moving_average_bps) : '—');
+      const devVal = ev.baseline_deviation_pct ? `▼ ${ev.baseline_deviation_pct.toFixed(2)}%` : (ev.drop_percentage ? `▼ ${ev.drop_percentage.toFixed(2)}%` : '—');
+      const statusVal = e.status || 'OPEN';
+
       html += `
-        <tr>
+        <tr style="cursor:pointer;" onclick="openEventInvestigationModal('${e.event_id}')" title="Click to open Event Investigation Workspace">
           <td>${renderStatusBadge(e.severity)}</td>
           <td><strong>${escapeHtml(e.device_id)}</strong></td>
           <td><code>${escapeHtml(eventType)}</code></td>
           <td><code>${escapeHtml(targetEntity)}</code></td>
-          <td>${escapeHtml(msg)}</td>
+          <td><strong style="color:var(--status-yellow);">${escapeHtml(currVal)}</strong></td>
+          <td>${escapeHtml(baseVal)}</td>
+          <td><span style="color:var(--status-red); font-weight:600;">${escapeHtml(devVal)}</span></td>
+          <td><span class="badge ${statusVal === 'RESOLVED' ? 'badge-healthy' : 'badge-warning'}">${escapeHtml(statusVal)}</span></td>
           <td><span style="font-size:12px; color:var(--text-muted);">${new Date(e.timestamp).toLocaleTimeString()}</span></td>
         </tr>`;
     });
@@ -1663,4 +1674,185 @@ function drawTrafficChart(timeSeries) {
   ctx.fillRect(width - 90, 10, 12, 12);
   ctx.fillStyle = '#f8fafc';
   ctx.fillText('TX Traffic', width - 72, 20);
+}
+
+// -------------------------------------------------------------------
+// 13. PHASE 6.5 EVENT INVESTIGATION WORKSPACE MODAL
+// -------------------------------------------------------------------
+async function openEventInvestigationModal(eventId) {
+  const modal = document.getElementById('investigation-modal');
+  const body = document.getElementById('investigation-modal-body');
+  if (!modal || !body) return;
+
+  body.innerHTML = `<div class="skeleton-loader"><p>Loading Event Investigation Workspace for ${escapeHtml(eventId)}...</p></div>`;
+  modal.classList.remove('hidden');
+
+  try {
+    const res = await fetch(`/api/events/${eventId}/investigation`);
+    if (!res.ok) throw new Error('Failed to load event investigation.');
+    const inv = await res.json();
+
+    const hdr = inv.event_header || {};
+    const summary = inv.summary || {};
+    const bl = inv.baseline_explanation || {};
+    const dom = inv.domain_investigation || {};
+    const nocActions = inv.noc_actions || [];
+    const related = inv.related_events || [];
+    const graphData = inv.traffic_graph || [];
+    const pattern = inv.traffic_pattern || 'NORMAL_VARIATION';
+
+    let html = `
+      <div class="modal-header">
+        <div>
+          <h2>🔍 EVENT INVESTIGATION WORKSPACE</h2>
+          <span style="font-size:13px; color:var(--text-muted);">
+            Event ID: <code>${escapeHtml(hdr.event_id)}</code> | Target Device: <strong>${escapeHtml(hdr.device_id)}</strong>
+          </span>
+        </div>
+        <button class="close-btn" onclick="document.getElementById('investigation-modal').classList.add('hidden')">✕</button>
+      </div>
+
+      <!-- Event Header Card -->
+      <div class="summary-grid" style="margin-bottom:20px;">
+        <div class="summary-card ${hdr.severity === 'CRITICAL' ? 'critical' : 'warning'}">
+          <span class="card-label">Severity</span>
+          <span class="card-value" style="font-size:18px;">${renderStatusBadge(hdr.severity)}</span>
+        </div>
+        <div class="summary-card healthy">
+          <span class="card-label">Event Type</span>
+          <span class="card-value" style="font-size:18px;"><code>${escapeHtml(hdr.event_type)}</code></span>
+        </div>
+        <div class="summary-card healthy">
+          <span class="card-label">Target Entity</span>
+          <span class="card-value" style="font-size:18px;"><code>${escapeHtml(hdr.target_entity)}</code></span>
+        </div>
+        <div class="summary-card healthy">
+          <span class="card-label">Status & Duration</span>
+          <span class="card-value" style="font-size:18px;">${escapeHtml(hdr.status)} (${hdr.duration_minutes}m)</span>
+        </div>
+      </div>
+
+      <!-- Deterministic Facts Summary -->
+      <div class="alert-box warning" style="margin-bottom:20px;">
+        <h3>DETERMINISTIC SUMMARY: ${escapeHtml(summary.title || hdr.event_type)}</h3>
+        <p style="font-size:14px; font-weight:600; margin-top:4px;">${escapeHtml(summary.description || '')}</p>
+        <div style="font-size:12px; margin-top:8px;">
+          <strong>Potential Impact:</strong>
+          <ul style="margin-top:4px; padding-left:20px;">
+            ${(summary.impact || []).map(i => `<li>${escapeHtml(i)}</li>`).join('')}
+          </ul>
+        </div>
+        <div style="font-size:11px; color:var(--text-muted); margin-top:6px;">Source: ${escapeHtml(summary.source || 'RouterOS Telemetry')}</div>
+      </div>
+
+      <!-- Baseline Explanation & Trust Breakdown -->
+      <div class="form-section">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <span class="form-section-title">BASELINE EXPLANATION & TRUST METRICS</span>
+          <span class="badge ${bl.trust_level === 'HIGH' ? 'badge-healthy' : 'badge-warning'}">${escapeHtml(bl.trust_tag || '🟢 BASELINE TRUSTED')}</span>
+        </div>
+
+        <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:12px; margin-top:12px;">
+          <div style="background:var(--bg-dark); padding:10px; border-radius:6px; border:1px solid var(--border-color);">
+            <div style="font-size:11px; color:var(--text-muted);">Current Value</div>
+            <div style="font-size:18px; font-weight:700; color:var(--status-yellow);">${bl.current_formatted || '0 bps'}</div>
+          </div>
+          <div style="background:var(--bg-dark); padding:10px; border-radius:6px; border:1px solid var(--border-color);">
+            <div style="font-size:11px; color:var(--text-muted);">Historical Baseline</div>
+            <div style="font-size:18px; font-weight:700;">${bl.baseline_formatted || '0 bps'}</div>
+          </div>
+          <div style="background:var(--bg-dark); padding:10px; border-radius:6px; border:1px solid var(--border-color);">
+            <div style="font-size:11px; color:var(--text-muted);">Baseline Deviation</div>
+            <div style="font-size:18px; font-weight:700; color:var(--status-red);">▼ ${bl.baseline_deviation_percentage || 0}%</div>
+          </div>
+          <div style="background:var(--bg-dark); padding:10px; border-radius:6px; border:1px solid var(--border-color);">
+            <div style="font-size:11px; color:var(--text-muted);">Valid History Samples</div>
+            <div style="font-size:18px; font-weight:700;">${bl.valid_sample_count || 0} / ${bl.sample_count || 0}</div>
+          </div>
+        </div>
+
+        <details style="margin-top:12px; background:rgba(255,255,255,0.03); padding:10px; border-radius:6px;">
+          <summary style="cursor:pointer; font-size:13px; font-weight:600; color:var(--accent-blue);">❓ What is this baseline?</summary>
+          <p style="font-size:12px; color:var(--text-main); margin-top:8px; line-height:1.5;">
+            ${escapeHtml(bl.explanation_text)}
+          </p>
+        </details>
+      </div>
+
+      <!-- Time Series Chart & Pattern -->
+      <div class="table-card" style="padding:16px; margin-bottom:24px;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+          <span class="table-title">📈 Event Time-Series Traffic Chart</span>
+          <span class="badge ${pattern.includes('DROP') ? 'badge-critical' : 'badge-warning'}">Pattern: ${escapeHtml(pattern)}</span>
+        </div>
+        <div style="width:100%; height:220px; position:relative;">
+          <canvas id="event-traffic-canvas" width="900" height="220" style="width:100%; height:100%; display:block;"></canvas>
+        </div>
+      </div>
+
+      <!-- Domain Specific Technical Investigation -->
+      <div class="form-section">
+        <span class="form-section-title">DOMAIN TECHNICAL INVESTIGATION (${escapeHtml(dom.media_type || dom.domain || 'HARDWARE')})</span>
+        <div style="margin-top:8px; font-size:13px; color:var(--text-main); display:flex; flex-direction:column; gap:6px;">
+          ${Object.entries(dom).map(([k, v]) => `
+            <div><strong style="color:var(--text-muted);">${escapeHtml(k)}:</strong> ${escapeHtml(String(v))}</div>
+          `).join('')}
+        </div>
+      </div>
+
+      <!-- Recommended NOC Actions -->
+      <div class="form-section">
+        <span class="form-section-title">RECOMMENDED NOC ACTIONS (READ-ONLY)</span>
+        <ul style="padding-left:20px; font-size:13px; color:var(--text-main); margin-top:10px; display:flex; flex-direction:column; gap:8px;">
+          ${nocActions.map(a => `<li><strong>Step ${a.step}:</strong> ${escapeHtml(a.check)} <code>${escapeHtml(a.command)}</code></li>`).join('')}
+        </ul>
+      </div>
+
+      <!-- AI Investigation Section (Manual Trigger) -->
+      ${hdr.incident_id ? `
+        <div class="form-section" style="border-left:4px solid var(--accent-blue);">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
+            <span class="form-section-title">🤖 OPENROUTER AI RCA (OPTIONAL)</span>
+            <button class="btn btn-secondary btn-sm" onclick="triggerManualAiInvestigation('${hdr.incident_id}')">🔍 RUN AI INVESTIGATION</button>
+          </div>
+          <div id="ai-investigation-result-${hdr.incident_id}" style="margin-top:10px; font-size:13px; color:var(--text-muted);">
+            Click 'RUN AI INVESTIGATION' to query OpenRouter LLM for deep root-cause synthesis.
+          </div>
+        </div>
+      ` : ''}
+    `;
+
+    body.innerHTML = html;
+
+    setTimeout(() => {
+      const c = document.getElementById('event-traffic-canvas');
+      if (c) {
+        c.id = 'traffic-canvas';
+        drawTrafficChart(graphData);
+      }
+    }, 100);
+  } catch (err) {
+    body.innerHTML = `<div class="alert-box failed">✕ Event workspace error: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+async function triggerManualAiInvestigation(incidentId) {
+  const container = document.getElementById(`ai-investigation-result-${incidentId}`);
+  if (container) {
+    container.innerHTML = '⚡ Querying OpenRouter AI RCA model (meta-llama/llama-3.3-70b-instruct)...';
+  }
+  try {
+    const res = await fetch(`/api/incidents/${incidentId}/investigate`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'AI investigation request failed.');
+
+    if (container) {
+      const summary = data.analysis ? data.analysis.summary : (data.summary || 'AI synthesis completed.');
+      container.innerHTML = `<div class="alert-box healthy"><p style="font-size:13px; line-height:1.5;">${escapeHtml(summary)}</p></div>`;
+    }
+  } catch (err) {
+    if (container) {
+      container.innerHTML = `<div class="alert-box failed"><p style="font-size:12px;">⚠️ ${escapeHtml(err.message)}</p></div>`;
+    }
+  }
 }
