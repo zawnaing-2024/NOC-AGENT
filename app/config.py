@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     BGP_LOOKBACK_MINUTES: int = Field(default=30, description="Lookback window in minutes for BGP peer metrics")
     MIN_BASELINE_SAMPLES: int = Field(default=10, description="Minimum baseline samples required for baseline anomaly rules")
     TRAFFIC_DROP_PERCENT: float = Field(default=70.0, description="Traffic drop percentage threshold (default 70%)")
+    TRAFFIC_SPIKE_THRESHOLD_PERCENT: float = Field(default=200.0, description="Traffic spike percentage threshold over baseline (default 200% = 3x baseline)")
     MIN_BASELINE_BPS: float = Field(default=10000.0, description="Minimum baseline bps threshold to prevent false positives on low-traffic interfaces (default 10 Kbps)")
     PERSISTENCE_SAMPLES: int = Field(default=3, description="Consecutive low samples required to trigger TRAFFIC_DROP (default 3 samples)")
 

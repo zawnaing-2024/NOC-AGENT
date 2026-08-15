@@ -168,6 +168,21 @@ class AnomalyDetector:
                     else:
                         rule_details["TRAFFIC_DROP"]["status"] = "HEALTHY"
 
+                    rule_details["TRAFFIC_SPIKE"]["evaluated"] = True
+                    rule_details["TRAFFIC_SPIKE"]["device_id"] = dev_id
+                    rule_details["TRAFFIC_SPIKE"]["entity"] = if_name
+                    rule_details["TRAFFIC_SPIKE"]["available_samples"] = max(rule_details["TRAFFIC_SPIKE"].get("available_samples", 0), len(if_metrics))
+                    rule_details["TRAFFIC_SPIKE"]["samples_used"] = max(rule_details["TRAFFIC_SPIKE"].get("samples_used", 0), len(rx_bps_hist))
+                    rule_details["TRAFFIC_SPIKE"]["samples"] = max(rule_details["TRAFFIC_SPIKE"]["samples"], len(rx_bps_hist))
+                    if len(rx_bps_hist) < settings.MIN_BASELINE_SAMPLES:
+                        rule_details["TRAFFIC_SPIKE"]["status"] = "INSUFFICIENT_HISTORY"
+                        has_insufficient_history = True
+                    elif any(e.type == "TRAFFIC_SPIKE" for e in evts):
+                        rule_details["TRAFFIC_SPIKE"]["anomaly"] = True
+                        rule_details["TRAFFIC_SPIKE"]["status"] = "ANOMALY"
+                    else:
+                        rule_details["TRAFFIC_SPIKE"]["status"] = "HEALTHY"
+
             # 3. BGP Peer Evaluation (Lookback 30 min)
             with db.get_connection() as conn:
                 peers = [r[0] for r in conn.execute("SELECT DISTINCT peer FROM bgp_metrics WHERE device_id = ?", (dev_id,)).fetchall()]
