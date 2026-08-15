@@ -108,15 +108,28 @@ Ensure your response is valid JSON matching this exact structure:
                 "details": err_msg
             }
 
+        def clean_json_str(s: str) -> str:
+            if not s:
+                return ""
+            s = s.strip()
+            if s.startswith("```json"):
+                s = s[7:]
+            elif s.startswith("```"):
+                s = s[3:]
+            if s.endswith("```"):
+                s = s[:-3]
+            return s.strip()
+
         # Validate JSON Response with Pydantic AIIncidentAnalysisResponse
         raw_content = res["content"]
+        cleaned_content = clean_json_str(raw_content)
         try:
-            validated_resp = AIIncidentAnalysisResponse.model_validate_json(raw_content)
+            validated_resp = AIIncidentAnalysisResponse.model_validate_json(cleaned_content)
         except Exception as parse_err:
             logger.warning(f"OpenRouter JSON validation failure: {parse_err}. Attempting correction retry...")
             retry_messages = messages + [
                 {"role": "assistant", "content": raw_content},
-                {"role": "user", "content": f"Your previous output was invalid JSON ({parse_err}). Return ONLY valid JSON matching the requested schema."}
+                {"role": "user", "content": f"Your previous output was invalid JSON ({parse_err}). Return ONLY valid raw JSON matching the requested schema without markdown formatting."}
             ]
             retry_res = generate_openrouter_completion(
                 messages=retry_messages,
@@ -126,7 +139,8 @@ Ensure your response is valid JSON matching this exact structure:
             if retry_res["success"]:
                 try:
                     raw_content = retry_res["content"]
-                    validated_resp = AIIncidentAnalysisResponse.model_validate_json(raw_content)
+                    cleaned_content = clean_json_str(raw_content)
+                    validated_resp = AIIncidentAnalysisResponse.model_validate_json(cleaned_content)
                 except Exception as retry_parse_err:
                     logger.error(f"OpenRouter JSON validation failed after retry: {retry_parse_err}")
                     return {"success": False, "error": f"Invalid JSON returned: {retry_parse_err}"}
