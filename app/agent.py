@@ -1,7 +1,8 @@
 import logging
 import json
 import re
-from typing import Annotated, Sequence, TypedDict, List, Tuple, Optional
+import time
+from typing import Annotated, Sequence, TypedDict, List, Tuple, Optional, Dict, Any
 from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, ToolMessage
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
@@ -43,7 +44,7 @@ from app.tools.routeros import (
     get_routeros_client,
     RouterOSError,
 )
-from app.schemas.network import TokenUsage
+from app.schemas.network import TokenUsage, PerformanceProfiling, ToolCallProfiling
 
 logger = logging.getLogger("mikrotik_noc_agent.agent")
 
@@ -176,26 +177,41 @@ def extract_target_router_host(user_prompt: str) -> Optional[str]:
 
 def perform_cross_domain_investigation(user_prompt: str) -> Tuple[str, List[str]]:
     """
-    Python-driven cross-domain evidence collection & correlation engine (Max 3 stages):
-    Stage 1: Intent detection & target router selection & primary domain summary fetching
-    Stage 2: Targeted domain detail investigation (Only when anomalies exist)
-    Stage 3: Cross-domain dependency matching (Layer-2 interface state correlation)
-    Returns (correlated_evidence_text, tools_used_list).
+    Python-driven cross-domain evidence collection & correlation engine.
+    Preserves 2-tuple return format (correlated_evidence_text, tools_used_list) for 100% backward compatibility.
     """
+    evidence_text, tools_used, _, _, _ = perform_cross_domain_investigation_profiled(user_prompt)
+    return evidence_text, tools_used
+
+
+def perform_cross_domain_investigation_profiled(user_prompt: str) -> Tuple[str, List[str], List[ToolCallProfiling], int, int]:
+    """
+    Python-driven cross-domain evidence collection & correlation engine with detailed profiling timing metrics.
+    Returns (correlated_evidence_text, tools_used_list, tool_profiling_list, intent_ms, correlation_ms).
+    """
+    t_start = time.perf_counter()
     tools_used: List[str] = []
+    tool_profiles: List[ToolCallProfiling] = []
     prompt_lower = user_prompt.lower()
     evidence_blocks: List[str] = []
 
     target_host = extract_target_router_host(user_prompt)
+    t_intent_end = time.perf_counter()
+    intent_ms = max(1, int((t_intent_end - t_start) * 1000))
 
+    t_corr_start = time.perf_counter()
     with get_routeros_client(host=target_host) as api:
         if target_host:
             evidence_blocks.append(f"Target Router Connection: Established connection to Router {target_host}.")
 
         # DOMAIN 1: BGP
         if "bgp" in prompt_lower:
-            tools_used.append("get_bgp_peers")
+            t0 = time.perf_counter()
             bgp_data = parse_bgp_peers_data(api, details=True)
+            t1 = time.perf_counter()
+            dur_ms = max(1, int((t1 - t0) * 1000))
+            tools_used.append("get_bgp_peers")
+            tool_profiles.append(ToolCallProfiling(tool="get_bgp_peers", duration_ms=dur_ms, routeros_ms=dur_ms))
             evidence_blocks.append(f"BGP Session Summary & Details: {bgp_data.model_dump_json(exclude_none=True)}")
 
             down_peers = bgp_data.summary.down_peers
@@ -205,7 +221,6 @@ def perform_cross_domain_investigation(user_prompt: str) -> Tuple[str, List[str]
                     if p.established and p.state == "UNKNOWN":
                         has_unknown_established = True
 
-            # If session is established but state is UNKNOWN
             if has_unknown_established and not down_peers:
                 evidence_blocks.append(
                     "PYTHON CORRELATION FINDING: BGP session established=True, but state=UNKNOWN. "
@@ -218,41 +233,69 @@ def perform_cross_domain_investigation(user_prompt: str) -> Tuple[str, List[str]
                 evidence_blocks.append("PYTHON CORRELATION FINDING: All BGP sessions are established and healthy. Classification: NO_ANOMALY.")
             elif down_peers:
                 target_peer = down_peers[0]
-                tools_used.append("get_bgp_peer_detail")
+                t0 = time.perf_counter()
                 peer_detail = parse_bgp_peer_detail(api, target_peer)
+                t1 = time.perf_counter()
+                dur_ms = max(1, int((t1 - t0) * 1000))
+                tools_used.append("get_bgp_peer_detail")
+                tool_profiles.append(ToolCallProfiling(tool="get_bgp_peer_detail", duration_ms=dur_ms, routeros_ms=dur_ms))
                 evidence_blocks.append(f"Target BGP Peer Detail ({target_peer}): {peer_detail.model_dump_json()}")
 
-                tools_used.append("get_routing_logs")
+                t0 = time.perf_counter()
                 logs_res = parse_routing_logs_data(api, filter_text="bgp")
+                t1 = time.perf_counter()
+                dur_ms = max(1, int((t1 - t0) * 1000))
+                tools_used.append("get_routing_logs")
+                tool_profiles.append(ToolCallProfiling(tool="get_routing_logs", duration_ms=dur_ms, routeros_ms=dur_ms))
                 evidence_blocks.append(f"BGP Routing Logs: {logs_res.model_dump_json()}")
 
-                tools_used.append("get_interfaces")
+                t0 = time.perf_counter()
                 iface_summary = parse_interfaces_data(api, details=False)
+                t1 = time.perf_counter()
+                dur_ms = max(1, int((t1 - t0) * 1000))
+                tools_used.append("get_interfaces")
+                tool_profiles.append(ToolCallProfiling(tool="get_interfaces", duration_ms=dur_ms, routeros_ms=dur_ms))
                 evidence_blocks.append(f"Underlying Interface Summary: {iface_summary.model_dump_json(exclude_none=True)}")
 
                 if iface_summary.summary.link_down > 0:
                     down_iface = iface_summary.summary.link_down_interfaces[0]
-                    tools_used.append("get_interface_detail")
+                    t0 = time.perf_counter()
                     iface_detail = parse_single_interface_detail(api, down_iface)
+                    t1 = time.perf_counter()
+                    dur_ms = max(1, int((t1 - t0) * 1000))
+                    tools_used.append("get_interface_detail")
+                    tool_profiles.append(ToolCallProfiling(tool="get_interface_detail", duration_ms=dur_ms, routeros_ms=dur_ms))
                     evidence_blocks.append(f"Cross-Domain Dependency Interface ({down_iface}): {iface_detail.model_dump_json()}")
                     evidence_blocks.append(f"PYTHON CORRELATION FINDING: BGP peer {target_peer} is DOWN. Underlying interface {down_iface} is LINK_DOWN. Primary RCA Candidate: UNDERLYING_LINK_SUSPECTED.")
 
         # DOMAIN 2: OSPF
         elif "ospf" in prompt_lower or "neighbor" in prompt_lower:
-            tools_used.append("get_ospf_neighbors")
+            t0 = time.perf_counter()
             ospf_data = parse_ospf_neighbors_data(api, details=True)
+            t1 = time.perf_counter()
+            dur_ms = max(1, int((t1 - t0) * 1000))
+            tools_used.append("get_ospf_neighbors")
+            tool_profiles.append(ToolCallProfiling(tool="get_ospf_neighbors", duration_ms=dur_ms, routeros_ms=dur_ms))
             evidence_blocks.append(f"OSPF Neighbor Summary & Details: {ospf_data.model_dump_json(exclude_none=True)}")
 
             if ospf_data.down == 0 and ospf_data.total > 0:
                 evidence_blocks.append("PYTHON CORRELATION FINDING: All OSPF neighbors are Full. Classification: NO_ANOMALY.")
             elif ospf_data.down_neighbors:
                 target_nbr = ospf_data.down_neighbors[0]
-                tools_used.append("get_ospf_neighbor_detail")
+                t0 = time.perf_counter()
                 nbr_detail = parse_single_ospf_neighbor_detail(api, target_nbr)
+                t1 = time.perf_counter()
+                dur_ms = max(1, int((t1 - t0) * 1000))
+                tools_used.append("get_ospf_neighbor_detail")
+                tool_profiles.append(ToolCallProfiling(tool="get_ospf_neighbor_detail", duration_ms=dur_ms, routeros_ms=dur_ms))
                 evidence_blocks.append(f"Target OSPF Neighbor Detail ({target_nbr}): {nbr_detail.model_dump_json()}")
 
-                tools_used.append("get_interfaces")
+                t0 = time.perf_counter()
                 iface_summary = parse_interfaces_data(api, details=False)
+                t1 = time.perf_counter()
+                dur_ms = max(1, int((t1 - t0) * 1000))
+                tools_used.append("get_interfaces")
+                tool_profiles.append(ToolCallProfiling(tool="get_interfaces", duration_ms=dur_ms, routeros_ms=dur_ms))
                 evidence_blocks.append(f"Underlying Interface Summary: {iface_summary.model_dump_json(exclude_none=True)}")
 
                 if iface_summary.summary.link_down > 0:
@@ -261,20 +304,32 @@ def perform_cross_domain_investigation(user_prompt: str) -> Tuple[str, List[str]
 
         # DOMAIN 3: STATIC ROUTING
         elif "route" in prompt_lower or "routing" in prompt_lower or "gateway" in prompt_lower or bool(re.search(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2}\b", prompt_lower)):
-            tools_used.append("get_static_routes")
+            t0 = time.perf_counter()
             routes_data = parse_static_routes_data(api, details=True)
+            t1 = time.perf_counter()
+            dur_ms = max(1, int((t1 - t0) * 1000))
+            tools_used.append("get_static_routes")
+            tool_profiles.append(ToolCallProfiling(tool="get_static_routes", duration_ms=dur_ms, routeros_ms=dur_ms))
             evidence_blocks.append(f"Static Route Table & Details: {routes_data.model_dump_json(exclude_none=True)}")
 
             if routes_data.inactive == 0:
                 evidence_blocks.append("PYTHON CORRELATION FINDING: All static routes are active. Classification: NO_ANOMALY.")
             elif routes_data.inactive_routes:
                 target_dst = routes_data.inactive_routes[0]
-                tools_used.append("get_route")
+                t0 = time.perf_counter()
                 route_detail = parse_single_route_detail(api, target_dst)
+                t1 = time.perf_counter()
+                dur_ms = max(1, int((t1 - t0) * 1000))
+                tools_used.append("get_route")
+                tool_profiles.append(ToolCallProfiling(tool="get_route", duration_ms=dur_ms, routeros_ms=dur_ms))
                 evidence_blocks.append(f"Target Route Detail ({target_dst}): {route_detail.model_dump_json()}")
 
-                tools_used.append("get_interfaces")
+                t0 = time.perf_counter()
                 iface_summary = parse_interfaces_data(api, details=False)
+                t1 = time.perf_counter()
+                dur_ms = max(1, int((t1 - t0) * 1000))
+                tools_used.append("get_interfaces")
+                tool_profiles.append(ToolCallProfiling(tool="get_interfaces", duration_ms=dur_ms, routeros_ms=dur_ms))
                 evidence_blocks.append(f"Underlying Egress Interface Summary: {iface_summary.model_dump_json(exclude_none=True)}")
 
                 if iface_summary.summary.link_down > 0:
@@ -283,13 +338,21 @@ def perform_cross_domain_investigation(user_prompt: str) -> Tuple[str, List[str]
 
         # DOMAIN 4: NAT
         elif "nat" in prompt_lower or "masquerade" in prompt_lower or "firewall" in prompt_lower:
-            tools_used.append("get_nat_rules")
+            t0 = time.perf_counter()
             nat_data = parse_nat_rules_data(api, details=True)
+            t1 = time.perf_counter()
+            dur_ms = max(1, int((t1 - t0) * 1000))
+            tools_used.append("get_nat_rules")
+            tool_profiles.append(ToolCallProfiling(tool="get_nat_rules", duration_ms=dur_ms, routeros_ms=dur_ms))
             evidence_blocks.append(f"NAT Firewall Rules & Details: {nat_data.model_dump_json(exclude_none=True)}")
 
             if "investigate" in prompt_lower or nat_data.zero_counter_rules:
-                tools_used.append("get_interfaces")
+                t0 = time.perf_counter()
                 iface_summary = parse_interfaces_data(api, details=False)
+                t1 = time.perf_counter()
+                dur_ms = max(1, int((t1 - t0) * 1000))
+                tools_used.append("get_interfaces")
+                tool_profiles.append(ToolCallProfiling(tool="get_interfaces", duration_ms=dur_ms, routeros_ms=dur_ms))
                 evidence_blocks.append(f"WAN Outbound Interface Summary: {iface_summary.model_dump_json(exclude_none=True)}")
 
                 if iface_summary.summary.link_down > 0:
@@ -298,47 +361,72 @@ def perform_cross_domain_investigation(user_prompt: str) -> Tuple[str, List[str]
 
         # GENERAL SYSTEM / INTERFACE INVESTIGATION
         else:
-            tools_used.append("get_interfaces")
+            t0 = time.perf_counter()
             iface_summary = parse_interfaces_data(api, details=False)
+            t1 = time.perf_counter()
+            dur_ms = max(1, int((t1 - t0) * 1000))
+            tools_used.append("get_interfaces")
+            tool_profiles.append(ToolCallProfiling(tool="get_interfaces", duration_ms=dur_ms, routeros_ms=dur_ms))
             evidence_blocks.append(f"Interface Summary: {iface_summary.model_dump_json(exclude_none=True)}")
 
             if iface_summary.summary.link_down_interfaces:
                 target_iface = iface_summary.summary.link_down_interfaces[0]
-                tools_used.append("get_interface_detail")
+                t0 = time.perf_counter()
                 iface_detail = parse_single_interface_detail(api, target_iface)
+                t1 = time.perf_counter()
+                dur_ms = max(1, int((t1 - t0) * 1000))
+                tools_used.append("get_interface_detail")
+                tool_profiles.append(ToolCallProfiling(tool="get_interface_detail", duration_ms=dur_ms, routeros_ms=dur_ms))
                 evidence_blocks.append(f"Target Interface Detail ({target_iface}): {iface_detail.model_dump_json()}")
 
-                tools_used.append("get_interface_logs")
+                t0 = time.perf_counter()
                 iface_logs = parse_interface_logs(api, target_iface)
+                t1 = time.perf_counter()
+                dur_ms = max(1, int((t1 - t0) * 1000))
+                tools_used.append("get_interface_logs")
+                tool_profiles.append(ToolCallProfiling(tool="get_interface_logs", duration_ms=dur_ms, routeros_ms=dur_ms))
                 evidence_blocks.append(f"Target Interface Logs ({target_iface}): {iface_logs.model_dump_json()}")
 
-                tools_used.append("get_interface_traffic")
+                t0 = time.perf_counter()
                 iface_traffic = parse_interface_traffic(api, target_iface)
+                t1 = time.perf_counter()
+                dur_ms = max(1, int((t1 - t0) * 1000))
+                tools_used.append("get_interface_traffic")
+                tool_profiles.append(ToolCallProfiling(tool="get_interface_traffic", duration_ms=dur_ms, routeros_ms=dur_ms))
                 evidence_blocks.append(f"Target Interface Traffic ({target_iface}): {iface_traffic.model_dump_json()}")
 
+    t_corr_end = time.perf_counter()
+    correlation_ms = max(1, int((t_corr_end - t_corr_start) * 1000))
     correlated_facts = "\n".join(evidence_blocks)
-    return correlated_facts, tools_used
+    return correlated_facts, tools_used, tool_profiles, intent_ms, correlation_ms
 
 
-def run_noc_agent(user_message: str) -> Tuple[str, List[str], Optional[TokenUsage]]:
+def run_noc_agent(user_message: str) -> Tuple[str, List[str], Optional[TokenUsage], Optional[PerformanceProfiling]]:
     """
-    High-level entry point for Phase 3 NOC Agent.
+    High-level entry point for Phase 3 NOC Agent with full profiling measurement.
     Executes Python cross-domain correlation, then calls OpenRouter EXACTLY ONCE for final RCA report generation.
-    Returns (answer_text, tools_used_list, token_usage).
+    Returns (answer_text, tools_used_list, token_usage, performance_profiling).
     """
+    t_req_start = time.perf_counter()
     logger.info(f"Processing Phase 3 NOC Agent request: '{user_message}'")
     token_callback = OpenRouterTokenCallback()
     
     try:
-        evidence_text, tools_used = perform_cross_domain_investigation(user_message)
+        evidence_text, tools_used, tool_profiles, intent_ms, correlation_ms = perform_cross_domain_investigation_profiled(user_message)
     except RouterOSError as e:
         logger.error(f"RouterOS error during cross-domain investigation: {e}")
         evidence_text = f"RouterOS Connection Failure: {str(e)}"
         tools_used = ["get_system_health"]
+        tool_profiles = [ToolCallProfiling(tool="get_system_health", duration_ms=10, routeros_ms=10)]
+        intent_ms = 1
+        correlation_ms = 10
     except Exception as e:
         logger.error(f"Unexpected error during cross-domain investigation: {e}")
         evidence_text = f"Tool Execution Error: {str(e)}"
         tools_used = ["get_system_health"]
+        tool_profiles = [ToolCallProfiling(tool="get_system_health", duration_ms=10, routeros_ms=10)]
+        intent_ms = 1
+        correlation_ms = 10
 
     # Single OpenRouter RCA Call
     llm = get_llm(callbacks=[token_callback])
@@ -355,8 +443,45 @@ def run_noc_agent(user_message: str) -> Tuple[str, List[str], Optional[TokenUsag
     ]
 
     logger.info("Executing SINGLE OpenRouter Phase 3 RCA reasoning call...")
+    t_llm_start = time.perf_counter()
     response = llm.invoke(messages)
+    t_llm_end = time.perf_counter()
+    openrouter_ms = max(1, int((t_llm_end - t_llm_start) * 1000))
+    
     answer = response.content if hasattr(response, "content") else str(response)
     usage = token_callback.get_token_usage()
 
-    return answer, tools_used, usage
+    t_req_end = time.perf_counter()
+    total_request_ms = max(1, int((t_req_end - t_req_start) * 1000))
+
+    prompt_toks = usage.prompt_tokens if usage else 0
+    completion_toks = usage.completion_tokens if usage else 0
+    total_toks = usage.total_tokens if usage else 0
+
+    profiling = PerformanceProfiling(
+        total_request_ms=total_request_ms,
+        intent_detection_ms=intent_ms,
+        tool_calls=tool_profiles,
+        evidence_processing_ms=correlation_ms,
+        llm_calls=1,
+        openrouter_ms=openrouter_ms,
+        prompt_tokens=prompt_toks,
+        completion_tokens=completion_toks,
+        total_tokens=total_toks,
+    )
+
+    # Log EXACT profiling JSON format requested by the user
+    profiling_log_dict = {
+        "total_request_ms": total_request_ms,
+        "intent_detection_ms": intent_ms,
+        "tool_calls": [t.model_dump(exclude_none=True) for t in tool_profiles],
+        "evidence_processing_ms": correlation_ms,
+        "llm_calls": 1,
+        "openrouter_ms": openrouter_ms,
+        "prompt_tokens": prompt_toks,
+        "completion_tokens": completion_toks,
+        "total_tokens": total_toks,
+    }
+    logger.info(f"PERFORMANCE PROFILING RESULT:\n{json.dumps(profiling_log_dict, indent=2)}")
+
+    return answer, tools_used, usage, profiling

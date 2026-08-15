@@ -17,7 +17,8 @@ def test_agent_chat_endpoint_success(mock_run_agent):
     mock_run_agent.return_value = (
         "OBSERVATION\nInspected system health.\nEVIDENCE\nCPU load is 0%.\nNORMAL CONDITIONS\nMemory usage normal.\nANOMALIES\nNone detected.\nUNCERTAINTIES\nNone.\nPOSSIBLE CAUSES\nN/A\nIMPACT\nNone\nCONFIDENCE\nHigh\nRECOMMENDED NEXT CHECKS\nNone",
         ["get_system_health"],
-        TokenUsage(model="meta-llama/llama-3.3-70b-instruct", prompt_tokens=150, completion_tokens=80, total_tokens=230, latency_ms=1200)
+        TokenUsage(model="meta-llama/llama-3.3-70b-instruct", prompt_tokens=150, completion_tokens=80, total_tokens=230, latency_ms=1200),
+        None,
     )
 
     response = client.post("/agent/chat", json={"message": "Check MikroTik health."})

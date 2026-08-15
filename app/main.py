@@ -48,21 +48,19 @@ def health_check():
 )
 def agent_chat(request: ChatRequest):
     """
-    Executes the NOC Agent workflow using OpenRouter API.
-    Determines required read-only tools, preprocesses compact evidence,
-    and returns an evidence-backed 9-section NOC report with cost/token metrics.
+    Executes the NOC Agent workflow using OpenRouter API with latency profiling metrics.
     """
     start_time = time.time()
     logger.info(f"Received NOC Agent chat request: '{request.message}'")
 
     try:
-        answer, tools_used, usage = run_noc_agent(request.message)
+        answer, tools_used, usage, profiling = run_noc_agent(request.message)
         duration = round(time.time() - start_time, 2)
         logger.info(
             f"NOC Agent completed request in {duration}s. Tools: {tools_used}, "
             f"Tokens: {usage.total_tokens if usage else 0}"
         )
-        return ChatResponse(answer=answer, tools_used=tools_used, usage=usage)
+        return ChatResponse(answer=answer, tools_used=tools_used, usage=usage, profiling=profiling)
 
     except RouterOSError as e:
         duration = round(time.time() - start_time, 2)
@@ -83,7 +81,6 @@ def agent_chat(request: ChatRequest):
         err_msg = str(e)
         logger.error(f"Error in OpenRouter agent execution ({duration}s): {err_msg}")
         
-        # Section 12 requirement: Return structured LLM_UNAVAILABLE error
         return JSONResponse(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             content=ErrorResponse(

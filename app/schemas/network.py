@@ -182,6 +182,26 @@ class TokenUsage(BaseModel):
     latency_ms: int = Field(default=0, description="Total execution latency in milliseconds")
 
 
+# --- Profiling Schemas ---
+
+class ToolCallProfiling(BaseModel):
+    tool: str = Field(..., description="Tool name")
+    duration_ms: int = Field(..., description="Total tool execution duration in milliseconds")
+    routeros_ms: Optional[int] = Field(default=None, description="RouterOS API time in milliseconds")
+
+
+class PerformanceProfiling(BaseModel):
+    total_request_ms: int = Field(..., description="Total request execution time in ms")
+    intent_detection_ms: int = Field(..., description="Intent detection time in ms")
+    tool_calls: List[ToolCallProfiling] = Field(default_factory=list, description="Tool execution timing breakdowns")
+    evidence_processing_ms: int = Field(..., description="Python evidence processing & correlation time in ms")
+    llm_calls: int = Field(default=1, description="Total LLM invocations")
+    openrouter_ms: int = Field(..., description="OpenRouter API latency in ms")
+    prompt_tokens: int = Field(default=0)
+    completion_tokens: int = Field(default=0)
+    total_tokens: int = Field(default=0)
+
+
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, description="User question or prompt for NOC Agent")
 
@@ -190,6 +210,7 @@ class ChatResponse(BaseModel):
     answer: str = Field(..., description="Agent NOC report response")
     tools_used: List[str] = Field(default_factory=list, description="List of tools invoked during investigation")
     usage: Optional[TokenUsage] = Field(default=None, description="OpenRouter token usage and latency metrics")
+    profiling: Optional[PerformanceProfiling] = Field(default=None, description="Detailed performance profiling metrics")
 
 
 class ErrorDetail(BaseModel):
