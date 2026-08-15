@@ -2,7 +2,7 @@ import uuid
 import time
 import logging
 from typing import List, Dict, Any, Optional
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 from app.config import settings
 from app.db.schemas import EventRecord
@@ -87,7 +87,17 @@ class AnomalyDetector:
                 evts = AnomalyDetector.check_device_cpu_memory(dev_id, curr_cpu, curr_mem, cpu_hist, mem_hist)
                 all_detected_events.extend(evts)
 
+                now_utc = datetime.now(timezone.utc)
+                win_start = (now_utc - timedelta(minutes=settings.ANOMALY_LOOKBACK_MINUTES)).isoformat()
+                win_end = now_utc.isoformat()
+
                 rule_details["CPU_SPIKE"]["evaluated"] = True
+                rule_details["CPU_SPIKE"]["device_id"] = dev_id
+                rule_details["CPU_SPIKE"]["entity"] = "system"
+                rule_details["CPU_SPIKE"]["query_window_start"] = win_start
+                rule_details["CPU_SPIKE"]["query_window_end"] = win_end
+                rule_details["CPU_SPIKE"]["available_samples"] = len(sys_metrics)
+                rule_details["CPU_SPIKE"]["samples_used"] = len(cpu_hist)
                 rule_details["CPU_SPIKE"]["samples"] = max(rule_details["CPU_SPIKE"]["samples"], len(cpu_hist))
                 if len(cpu_hist) < settings.MIN_BASELINE_SAMPLES:
                     rule_details["CPU_SPIKE"]["status"] = "INSUFFICIENT_HISTORY"
@@ -99,6 +109,12 @@ class AnomalyDetector:
                     rule_details["CPU_SPIKE"]["status"] = "HEALTHY"
 
                 rule_details["MEMORY_SPIKE"]["evaluated"] = True
+                rule_details["MEMORY_SPIKE"]["device_id"] = dev_id
+                rule_details["MEMORY_SPIKE"]["entity"] = "system"
+                rule_details["MEMORY_SPIKE"]["query_window_start"] = win_start
+                rule_details["MEMORY_SPIKE"]["query_window_end"] = win_end
+                rule_details["MEMORY_SPIKE"]["available_samples"] = len(sys_metrics)
+                rule_details["MEMORY_SPIKE"]["samples_used"] = len(mem_hist)
                 rule_details["MEMORY_SPIKE"]["samples"] = max(rule_details["MEMORY_SPIKE"]["samples"], len(mem_hist))
                 if len(mem_hist) < settings.MIN_BASELINE_SAMPLES:
                     rule_details["MEMORY_SPIKE"]["status"] = "INSUFFICIENT_HISTORY"
@@ -126,6 +142,8 @@ class AnomalyDetector:
                     all_detected_events.extend(evts)
 
                     rule_details["INTERFACE_DOWN"]["evaluated"] = True
+                    rule_details["INTERFACE_DOWN"]["device_id"] = dev_id
+                    rule_details["INTERFACE_DOWN"]["entity"] = if_name
                     rule_details["INTERFACE_DOWN"]["samples"] = max(rule_details["INTERFACE_DOWN"]["samples"], len(if_metrics))
                     if len(if_metrics) < 2:
                         rule_details["INTERFACE_DOWN"]["status"] = "INSUFFICIENT_HISTORY"
@@ -136,6 +154,10 @@ class AnomalyDetector:
                         rule_details["INTERFACE_DOWN"]["status"] = "HEALTHY"
 
                     rule_details["TRAFFIC_DROP"]["evaluated"] = True
+                    rule_details["TRAFFIC_DROP"]["device_id"] = dev_id
+                    rule_details["TRAFFIC_DROP"]["entity"] = if_name
+                    rule_details["TRAFFIC_DROP"]["available_samples"] = max(rule_details["TRAFFIC_DROP"].get("available_samples", 0), len(if_metrics))
+                    rule_details["TRAFFIC_DROP"]["samples_used"] = max(rule_details["TRAFFIC_DROP"].get("samples_used", 0), len(rx_bps_hist))
                     rule_details["TRAFFIC_DROP"]["samples"] = max(rule_details["TRAFFIC_DROP"]["samples"], len(rx_bps_hist))
                     if len(rx_bps_hist) < settings.MIN_BASELINE_SAMPLES:
                         rule_details["TRAFFIC_DROP"]["status"] = "INSUFFICIENT_HISTORY"
