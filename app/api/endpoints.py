@@ -13,6 +13,12 @@ router = APIRouter(prefix="/api", tags=["Phase 4 AIOps Telemetry & Incidents"])
 from app.engine.anomaly import AnomalyDetector, engine_diagnostics, CONFIGURED_RULES
 
 
+@router.get("/health", status_code=status.HTTP_200_OK)
+def get_health_endpoint():
+    """Service health check endpoint."""
+    return {"status": "ok"}
+
+
 @router.get("/anomaly/status", status_code=status.HTTP_200_OK)
 def get_anomaly_status():
     """Retrieves anomaly engine status and execution diagnostics."""
