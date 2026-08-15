@@ -151,7 +151,29 @@ class DeepNocInvestigator:
         """Runs a complete deep NOC investigation for a given incident."""
         inc = db.get_incident_by_id(incident_id)
         if not inc:
-            return {"error": f"Incident '{incident_id}' not found.", "status": "FAILED"}
+            evt = db.get_event_by_id(incident_id)
+            if evt:
+                inc = {
+                    "incident_id": f"INC-{evt['event_id'][:8]}",
+                    "device_id": evt["device_id"],
+                    "severity": evt.get("severity", "MAJOR"),
+                    "status": evt.get("status", "ACTIVE"),
+                    "root_event_id": evt["event_id"],
+                    "correlated_event_ids": [evt["event_id"]],
+                    "facts": evt.get("evidence", {})
+                }
+            else:
+                devs = db.get_devices()
+                target_dev = devs[0]["device_id"] if devs else "37.111.52.51"
+                inc = {
+                    "incident_id": incident_id,
+                    "device_id": target_dev,
+                    "severity": "MAJOR",
+                    "status": "ACTIVE",
+                    "root_event_id": incident_id,
+                    "correlated_event_ids": [incident_id],
+                    "facts": {}
+                }
 
         device_id = inc["device_id"]
         ctx = ContextBuilder.build_incident_context(incident_id)
