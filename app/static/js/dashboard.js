@@ -1318,7 +1318,10 @@ async function openInvestigationWorkspace(incidentId) {
     const pingInfo = tInv.ping_investigation || {};
     const optInfo = tInv.optical_power || {};
     const decisionPath = tInv.decision_tree_path || [];
+    const stepsList = tInv.steps || [];
     const aiRca = inv.ai_analysis || null;
+    const conclusion = inv.investigation_conclusion || tInv.investigation_conclusion || 'INVESTIGATION_COMPLETED';
+    const isAuthFailed = tInv.routeros_authenticated === false || tInv.routeros_status === 'FAILED';
 
     let html = `
       <div class="modal-header">
@@ -1329,46 +1332,66 @@ async function openInvestigationWorkspace(incidentId) {
         <button class="close-btn" onclick="document.getElementById('investigation-modal').classList.add('hidden')">✕</button>
       </div>
 
-      <!-- Primary Root Cause Alert Banner -->
-      <div class="alert-box failed" style="margin-bottom:24px;">
-        <h3 style="margin-bottom:4px;">PRIMARY ROOT CAUSE IDENTIFIED</h3>
-        <p style="font-size:16px; font-weight:700;">${escapeHtml(pf)}</p>
-        <p style="font-size:12px; margin-top:4px;">Investigation Status: <strong>${escapeHtml(inv.status)}</strong> | Target Interface: <code>${escapeHtml(tInv.interface_name || 'ethernet')}</code></p>
+      <!-- Investigation Conclusion Banner -->
+      <div class="alert-box ${isAuthFailed ? 'failed' : 'warning'}" style="margin-bottom:20px;">
+        <h3 style="margin-bottom:4px;">INVESTIGATION CONCLUSION</h3>
+        <p style="font-size:16px; font-weight:700;">${escapeHtml(conclusion)} (${escapeHtml(pf)})</p>
+        <p style="font-size:12px; margin-top:4px;">
+          Evidence Completeness: <strong>${escapeHtml(tInv.evidence_completeness || 'COMPLETE')}</strong> | 
+          Confidence: <span class="badge ${tInv.evidence_confidence === 'HIGH' ? 'badge-healthy' : 'badge-warning'}">${escapeHtml(tInv.evidence_confidence || 'HIGH')}</span> | 
+          Target Interface: <code>${escapeHtml(tInv.interface_name || 'ethernet')}</code>
+        </p>
       </div>`;
 
-    // Traffic Drop RX & TX Magnitude Cards
+    // RouterOS API Authentication Failure Alert Card
+    if (isAuthFailed) {
+      html += `
+        <div class="alert-box failed" style="margin-bottom:24px; border-left:6px solid #ef4444;">
+          <h4 style="margin-bottom:4px; font-size:15px;">🔴 ROUTEROS API AUTHENTICATION FAILED</h4>
+          <p style="font-size:13px; color:var(--text-main); margin-top:4px;">
+            RouterOS API connection failed for target host <code>${escapeHtml(inv.device_id)}</code>: <strong>${escapeHtml(tInv.routeros_error || 'Authentication failure')}</strong>
+          </p>
+          <p style="font-size:12px; color:var(--status-yellow); margin-top:6px;">
+            ⚠️ Dependent hardware checks, media classification, optical telemetry, and IP ping reachability have been safely SKIPPED. The system will NOT infer or fabricate missing RouterOS evidence.
+          </p>
+        </div>`;
+    }
+
+    // Traffic Change & Baseline Deviation Magnitude Cards
     if (tInv.rx_traffic_change || tInv.tx_traffic_change) {
       html += `
         <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:16px; margin-bottom:24px;">
           <div class="summary-card ${rxCh.severity === 'CRITICAL' || rxCh.severity === 'SEVERE' ? 'critical' : 'warning'}">
             <div style="display:flex; justify-content:space-between; align-items:center;">
-              <span class="card-label">RX Traffic Rate Drop</span>
-              <span class="badge ${rxCh.rate_classification === 'SHARP' ? 'badge-critical' : 'badge-warning'}">${rxCh.rate_classification || 'DROP'} DROP</span>
+              <span class="card-label">RX Traffic Short-Term Change</span>
+              <span class="badge ${rxCh.short_term_direction === 'DROP' ? 'badge-critical' : (rxCh.short_term_direction === 'INCREASE' ? 'badge-healthy' : 'badge-warning')}">${rxCh.short_term_direction || 'SAMPLE-TO-SAMPLE'}</span>
             </div>
-            <div style="font-size:22px; font-weight:700; margin-top:6px;">
+            <div style="font-size:20px; font-weight:700; margin-top:6px;">
               ${rxCh.previous_formatted || '0 bps'} → ${rxCh.current_formatted || '0 bps'}
             </div>
-            <div style="font-size:13px; color:var(--status-red); font-weight:600; margin-top:4px;">
-              ▼ ${rxCh.percentage_drop || 0}% (${rxCh.drop_formatted || '0 bps'})
+            <div style="font-size:13px; color:${rxCh.short_term_direction === 'DROP' ? 'var(--status-red)' : (rxCh.short_term_direction === 'INCREASE' ? 'var(--status-green)' : 'var(--text-main)')}; font-weight:600; margin-top:4px;">
+              ${rxCh.short_term_formatted || '0 bps'}
             </div>
-            <div style="font-size:11px; color:var(--text-muted); margin-top:4px;">
-              Moving Baseline: ${rxCh.baseline_formatted || '0 bps'}
+            <div style="font-size:11px; color:var(--text-muted); margin-top:6px; border-top:1px solid rgba(255,255,255,0.1); padding-top:4px;">
+              vs Moving Baseline (${rxCh.baseline_formatted || '0 bps'}):<br>
+              <strong style="color:var(--text-main);">${rxCh.baseline_deviation_formatted || 'ON BASELINE'}</strong>
             </div>
           </div>
 
           <div class="summary-card ${txCh.severity === 'CRITICAL' || txCh.severity === 'SEVERE' ? 'critical' : 'healthy'}">
             <div style="display:flex; justify-content:space-between; align-items:center;">
-              <span class="card-label">TX Traffic Rate Drop</span>
-              <span class="badge ${txCh.rate_classification === 'SHARP' ? 'badge-warning' : 'badge-healthy'}">${txCh.rate_classification || 'NORMAL'} DROP</span>
+              <span class="card-label">TX Traffic Short-Term Change</span>
+              <span class="badge ${txCh.short_term_direction === 'DROP' ? 'badge-critical' : (txCh.short_term_direction === 'INCREASE' ? 'badge-healthy' : 'badge-warning')}">${txCh.short_term_direction || 'SAMPLE-TO-SAMPLE'}</span>
             </div>
-            <div style="font-size:22px; font-weight:700; margin-top:6px;">
+            <div style="font-size:20px; font-weight:700; margin-top:6px;">
               ${txCh.previous_formatted || '0 bps'} → ${txCh.current_formatted || '0 bps'}
             </div>
-            <div style="font-size:13px; color:${txCh.percentage_drop > 20 ? 'var(--status-red)' : 'var(--status-green)'}; font-weight:600; margin-top:4px;">
-              ▼ ${txCh.percentage_drop || 0}% (${txCh.drop_formatted || '0 bps'})
+            <div style="font-size:13px; color:${txCh.short_term_direction === 'DROP' ? 'var(--status-red)' : (txCh.short_term_direction === 'INCREASE' ? 'var(--status-green)' : 'var(--text-main)')}; font-weight:600; margin-top:4px;">
+              ${txCh.short_term_formatted || '0 bps'}
             </div>
-            <div style="font-size:11px; color:var(--text-muted); margin-top:4px;">
-              Moving Baseline: ${txCh.baseline_formatted || '0 bps'}
+            <div style="font-size:11px; color:var(--text-muted); margin-top:6px; border-top:1px solid rgba(255,255,255,0.1); padding-top:4px;">
+              vs Moving Baseline (${txCh.baseline_formatted || '0 bps'}):<br>
+              <strong style="color:var(--text-main);">${txCh.baseline_deviation_formatted || 'ON BASELINE'}</strong>
             </div>
           </div>
         </div>`;
@@ -1393,7 +1416,7 @@ async function openInvestigationWorkspace(incidentId) {
           <span class="form-section-title">DETERMINISTIC DECISION TREE EXECUTION PATH</span>
           <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:10px;">
             ${decisionPath.map((step, idx) => `
-              <span class="badge badge-healthy" style="font-family:monospace; font-size:11px;">${idx + 1}. ${escapeHtml(step)}</span>
+              <span class="badge ${step.includes('FAIL') || step.includes('HALT') ? 'badge-critical' : 'badge-healthy'}" style="font-family:monospace; font-size:11px;">${idx + 1}. ${escapeHtml(step)}</span>
               ${idx < decisionPath.length - 1 ? '<span style="color:var(--text-muted);">➔</span>' : ''}
             `).join('')}
           </div>
@@ -1440,30 +1463,33 @@ async function openInvestigationWorkspace(incidentId) {
             <div>Media Type: <strong style="color:#fde047;">🟨 LOGICAL / ${escapeHtml(mType)}</strong></div>
             <div>Optical Monitoring: <span class="badge badge-warning">NOT APPLICABLE</span></div>
             <div>Classification Reason: <span>${escapeHtml(mediaInfo.reason || 'Logical adapter')}</span></div>
-            <div>Operational State: <strong>${ifState.running ? '🟢 ACTIVE' : '🔴 INACTIVE'}</strong></div>
+            <div>Operational State: <strong>${ifState.canonical_state === 'UP' ? '🟢 ACTIVE' : '🔴 INACTIVE'}</strong></div>
           </div>
         </div>`;
     } else {
       mediaCardHtml = `
         <div class="form-section">
-          <span class="form-section-title">⚪ UNKNOWN MEDIA TYPE</span>
+          <span class="form-section-title">⚪ PHYSICAL MEDIA TYPE</span>
           <div style="display:flex; flex-direction:column; gap:6px; font-size:13px; margin-top:8px;">
             <div>Media Type: <strong>⚪ UNKNOWN</strong></div>
             <div>Confidence: <span class="badge badge-warning">LOW</span></div>
             <div>Reason: <span>${escapeHtml(mediaInfo.reason || 'RouterOS API did not provide sufficient media info.')}</span></div>
+            <div>Troubleshooting: <span class="badge badge-warning">LIMITED</span></div>
           </div>
         </div>`;
     }
+
+    const cState = ifState.canonical_state || (ifState.running ? 'UP' : 'DOWN');
 
     // Live RouterOS API Interface & Connectivity Checks
     html += `
       <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:16px; margin-bottom:24px;">
         <div class="form-section">
-          <span class="form-section-title">INTERFACE HARDWARE STATE</span>
+          <span class="form-section-title">CANONICAL INTERFACE STATE</span>
           <div style="display:flex; flex-direction:column; gap:6px; font-size:13px; margin-top:8px;">
-            <div>Running Status: <strong>${ifState.running ? '🟢 UP / RUNNING' : '🔴 DOWN / LINK_LOSS'}</strong></div>
+            <div>Canonical State: <strong>${cState === 'UP' ? '🟢 UP' : (cState === 'DOWN' ? '🔴 DOWN' : (cState === 'DISABLED' ? '🟡 DISABLED' : '⚪ UNKNOWN'))}</strong></div>
             <div>Disabled: <strong>${ifState.disabled ? 'YES' : 'NO'}</strong></div>
-            <div>Link Downs: <strong>${ifState.link_downs || 0}</strong></div>
+            <div>Link Downs Counter: <strong>${ifState.link_downs || 0}</strong></div>
             <div>RX/TX Errors: <strong>${ifState.rx_errors || 0} / ${ifState.tx_errors || 0}</strong></div>
             <div>RX/TX Drops: <strong>${ifState.rx_drops || 0} / ${ifState.tx_drops || 0}</strong></div>
           </div>
@@ -1472,9 +1498,9 @@ async function openInvestigationWorkspace(incidentId) {
         <div class="form-section">
           <span class="form-section-title">IP & L3 CONNECTIVITY CHECK</span>
           <div style="display:flex; flex-direction:column; gap:6px; font-size:13px; margin-top:8px;">
-            <div>Interface HAS_IP: <strong>${ipInfo.has_ip ? 'YES (' + escapeHtml(ipInfo.cidr) + ')' : 'NO (L2 Only)'}</strong></div>
+            <div>Interface HAS_IP: <strong>${ipInfo.has_ip ? 'YES (' + escapeHtml(ipInfo.cidr || ipInfo.ip_address) + ')' : 'NO (L2 Only)'}</strong></div>
             <div>Ping Target: <code>${escapeHtml(pingInfo.destination || 'N/A')}</code></div>
-            <div>Reachability: <strong>${pingInfo.reachable ? '🟢 0% Packet Loss' : (ipInfo.has_ip ? '🔴 100% Packet Loss' : 'N/A')}</strong></div>
+            <div>Reachability: <strong>${pingInfo.reachable ? '🟢 0% Packet Loss' : (ipInfo.has_ip && !isAuthFailed ? '🔴 100% Packet Loss' : 'N/A')}</strong></div>
             <div>Avg Latency: <strong>${pingInfo.avg_latency_ms || 0} ms</strong></div>
           </div>
         </div>

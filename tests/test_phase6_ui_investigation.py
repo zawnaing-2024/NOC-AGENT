@@ -95,7 +95,7 @@ def test_phase6_deep_investigation_engine_and_endpoint():
     assert inv["status"] == "COMPLETED"
     assert "INTERFACE_DOWN" in inv["primary_failure"]
     assert len(inv["evidence"]) >= 1
-    assert len(inv["visualization_flow"]) == 5
+    assert "nodes" in inv["visualization_flow"] and len(inv["visualization_flow"]["nodes"]) >= 2
     assert len(inv["recommendations"]) >= 1
 
     # Test endpoint

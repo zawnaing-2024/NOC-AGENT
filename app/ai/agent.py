@@ -33,8 +33,20 @@ class AIAgentService:
             logger.error(f"Failed to build incident context for {incident_id}: {e}")
             return {"success": False, "error": f"Incident not found: {str(e)}"}
 
-        prompt = f"""Please perform Root Cause Analysis (RCA) on the following NOC incident based strictly on the provided evidence payload:
+        # Phase 6.3 Grounding Guardrail
+        auth_failed = (context.get("routeros_authenticated") is False or 
+                       context.get("evidence_completeness") == "INCOMPLETE" or 
+                       context.get("routeros_status") == "FAILED")
+        
+        grounding_notice = ""
+        if auth_failed:
+            grounding_notice = """\nCRITICAL GROUNDING MANDATE:
+RouterOS evidence collection failed. Do not infer or fabricate device state, physical media type, optical telemetry, or ping reachability.
+You MUST set root_cause.description to 'INSUFFICIENT_EVIDENCE' and confidence to 'LOW'.
+Summary MUST explicitly state: 'The traffic level is significantly below historical baseline, but RouterOS authentication failed during investigation. Physical media type, interface state, IP configuration and connectivity could not be verified.'\n"""
 
+        prompt = f"""Please perform Root Cause Analysis (RCA) on the following NOC incident based strictly on the provided evidence payload:
+{grounding_notice}
 EVIDENCE & TIMELINE PAYLOAD:
 {json.dumps(context, indent=2)}
 
