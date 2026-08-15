@@ -62,6 +62,50 @@ function formatBandwidth(bps) {
   return val.toFixed(0) + ' bps';
 }
 
+// Event Message Formatter Helper
+function formatEventMessage(e) {
+  if (!e) return 'Anomaly detected';
+  let ev = e.evidence;
+  if (typeof ev === 'string') {
+    try { ev = JSON.parse(ev); } catch (_) {}
+  }
+  
+  const type = e.type || e.event_type || 'ANOMALY';
+  const entity = e.entity || e.metric_name || '';
+
+  if (!ev || typeof ev !== 'object') {
+    return e.message || (entity ? `Anomaly detected on ${entity}` : type);
+  }
+
+  if (ev.summary) return ev.summary;
+  if (ev.message) return ev.message;
+
+  if (type === 'TRAFFIC_DROP') {
+    const curr = formatBandwidth(ev.current_bps || 0);
+    const avg = formatBandwidth(ev.moving_average_bps || 0);
+    const pct = ev.drop_percentage ? ev.drop_percentage.toFixed(1) : '100';
+    return `Traffic dropped ${pct}% on ${entity || 'interface'} (Current: ${curr}, Baseline: ${avg})`;
+  }
+  if (type === 'CPU_SPIKE') {
+    const cpuVal = ev.current_cpu || ev.cpu_percent || ev.cpu_load || 0;
+    return `CPU load spiked to ${cpuVal}% (Threshold: ${ev.threshold || 80}%)`;
+  }
+  if (type === 'BGP_DOWN') {
+    return `BGP session DOWN for peer ${entity || ev.peer || 'remote'}`;
+  }
+  if (type === 'INTERFACE_DOWN') {
+    return `Interface link DOWN on ${entity || ev.interface || 'interface'}`;
+  }
+  if (type === 'OSPF_DOWN') {
+    return `OSPF neighbor DOWN for neighbor ${entity || ev.neighbor || 'neighbor'}`;
+  }
+  if (type === 'DEFAULT_ROUTE_DOWN') {
+    return `Default gateway route (0.0.0.0/0) INACTIVE`;
+  }
+
+  return `Anomaly ${type} on ${entity || 'device'}`;
+}
+
 // Navigation & Sidebar Handlers
 function initNavigation() {
   document.querySelectorAll('.nav-btn').forEach(btn => {
@@ -833,11 +877,13 @@ async function openDeviceDetailWorkspace(deviceId) {
       html += `<tr><td colspan="4" style="text-align:center; padding:20px; color:var(--text-muted);">No recent events recorded for this device.</td></tr>`;
     } else {
       events.forEach(e => {
+        const evType = e.type || e.event_type || 'ANOMALY';
+        const msg = formatEventMessage(e);
         html += `
           <tr>
             <td>${renderStatusBadge(e.severity)}</td>
-            <td><code>${escapeHtml(e.event_type)}</code></td>
-            <td>${escapeHtml(e.message)}</td>
+            <td><code>${escapeHtml(evType)}</code></td>
+            <td>${escapeHtml(msg)}</td>
             <td><span style="font-size:12px; color:var(--text-muted);">${new Date(e.timestamp).toLocaleTimeString()}</span></td>
           </tr>`;
       });
@@ -1171,13 +1217,16 @@ async function renderEventsView(container) {
     html += `<tr><td colspan="6" style="text-align:center; padding:24px; color:var(--text-muted);">No telemetry events recorded.</td></tr>`;
   } else {
     events.forEach(e => {
+      const eventType = e.type || e.event_type || 'ANOMALY';
+      const targetEntity = e.entity || e.metric_name || 'System';
+      const msg = formatEventMessage(e);
       html += `
         <tr>
           <td>${renderStatusBadge(e.severity)}</td>
           <td><strong>${escapeHtml(e.device_id)}</strong></td>
-          <td><code>${escapeHtml(e.event_type)}</code></td>
-          <td><code>${escapeHtml(e.metric_name)}</code></td>
-          <td>${escapeHtml(e.message)}</td>
+          <td><code>${escapeHtml(eventType)}</code></td>
+          <td><code>${escapeHtml(targetEntity)}</code></td>
+          <td>${escapeHtml(msg)}</td>
           <td><span style="font-size:12px; color:var(--text-muted);">${new Date(e.timestamp).toLocaleTimeString()}</span></td>
         </tr>`;
     });
