@@ -112,10 +112,11 @@ class CorrelationEngine:
     """Correlates events, manages incidents, performs in-place deduplication, and handles recovery."""
 
     @staticmethod
-    def process_events(events: List[EventRecord]) -> None:
+    def process_events(events: List[EventRecord]) -> Optional[str]:
         if not events:
-            return
+            return None
 
+        last_inc_id = None
         for event in events:
             # 1. Check if recovery event
             if "RECOVERED" in event.type:
@@ -128,11 +129,15 @@ class CorrelationEngine:
                 event.event_id = actual_event_id
 
             # 3. Correlate active event into Incident
-            CorrelationEngine._correlate_anomaly_event(event)
+            inc_id = CorrelationEngine._correlate_anomaly_event(event)
+            if inc_id:
+                last_inc_id = inc_id
+
+        return last_inc_id
 
     @staticmethod
     def _handle_recovery_event(recovery_event: EventRecord) -> None:
-        """Handles recovery event by marking corresponding active event RECOVERED and incident CLOSED."""
+        """Handles recovery event by marking corresponding active event RECOVERED and incident RESOLVED."""
         device_id = recovery_event.device_id
         entity = recovery_event.entity
         base_type = recovery_event.type.replace("_RECOVERED", "_DOWN").replace("_RECOVERED", "_DROP")
@@ -145,27 +150,30 @@ class CorrelationEngine:
         open_inc = db.get_open_incident_by_fingerprint(device_id, f"{device_id}:{base_type}:{entity}")
 
         if open_inc:
-            logger.info(f"Recovery event {recovery_event.type} detected for {entity}. Closing incident {open_inc['incident_id']}...")
+            logger.info(f"Recovery event {recovery_event.type} detected for {entity}. Resolving incident {open_inc['incident_id']}...")
+            facts = json.loads(open_inc["facts"]) if isinstance(open_inc.get("facts"), str) else open_inc.get("facts", {})
+            facts["resolved_at"] = current_utc_timestamp()
+
             inc_record = IncidentRecord(
                 incident_id=open_inc["incident_id"],
                 device_id=open_inc["device_id"],
                 created_at=open_inc["created_at"],
                 updated_at=current_utc_timestamp(),
                 severity=open_inc["severity"],
-                status="CLOSED",
+                status="RESOLVED",
                 root_event_id=open_inc["root_event_id"],
                 correlated_event_ids=json.loads(open_inc["correlated_event_ids"]) if isinstance(open_inc["correlated_event_ids"], str) else open_inc["correlated_event_ids"],
                 event_count=open_inc.get("event_count", 1),
                 occurrence_count=open_inc.get("occurrence_count", 1),
                 confidence=open_inc["confidence"],
-                facts=json.loads(open_inc["facts"]) if isinstance(open_inc.get("facts"), str) else open_inc.get("facts", {}),
-                summary=(open_inc.get("summary") or "") + "\n\n[RECOVERY DETECTED]: Fault recovered. Incident CLOSED.",
+                facts=facts,
+                summary=(open_inc.get("summary") or "") + "\n\n[RECOVERY DETECTED]: Fault recovered naturally. Incident RESOLVED.",
                 llm_status=open_inc["llm_status"]
             )
             db.upsert_incident(inc_record)
 
     @staticmethod
-    def _correlate_anomaly_event(event: EventRecord) -> None:
+    def _correlate_anomaly_event(event: EventRecord) -> str:
         """Correlates active anomaly event into existing open incident within correlation window or creates new incident."""
         device_id = event.device_id
         open_incidents = db.get_incidents(limit=10, status="OPEN")
@@ -233,6 +241,7 @@ class CorrelationEngine:
 
             db.upsert_incident(inc_obj)
             logger.info(f"Correlated active event {event.type} ({event.entity}) into existing incident {inc_obj.incident_id} (Occurrences={cum_occurrences}).")
+            return inc_obj.incident_id
         else:
             # Create new Incident
             inc_id = str(uuid.uuid4())
@@ -291,3 +300,4 @@ class CorrelationEngine:
                 conn.commit()
 
             logger.info(f"Created new incident {inc_id} for device {device_id} (Root: {event.type} on {event.entity}).")
+            return inc_id

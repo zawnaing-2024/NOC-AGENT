@@ -57,9 +57,15 @@ def get_devices():
 
 
 @router.get("/events", status_code=status.HTTP_200_OK)
-def get_events(limit: int = Query(default=100, ge=1, le=1000), device_id: Optional[str] = Query(default=None)):
-    """Retrieves list of historical anomaly events."""
-    events = db.get_events(limit=limit, device_id=device_id)
+def get_events(
+    limit: int = Query(default=100, ge=1, le=1000),
+    device_id: Optional[str] = Query(default=None),
+    severity: Optional[str] = Query(default=None),
+    status_filter: Optional[str] = Query(default=None, alias="status"),
+    event_type: Optional[str] = Query(default=None),
+):
+    """Retrieves list of historical anomaly events with multi-parameter filtering."""
+    events = db.get_events(limit=limit, device_id=device_id, severity=severity, status=status_filter, event_type=event_type)
     return {"events": events, "count": len(events)}
 
 
@@ -73,9 +79,14 @@ def get_event_detail(event_id: str):
 
 
 @router.get("/incidents", status_code=status.HTTP_200_OK)
-def get_incidents(limit: int = Query(default=50, ge=1, le=500), status_filter: Optional[str] = Query(default=None, alias="status")):
-    """Retrieves list of correlated AIOps incidents."""
-    incidents = db.get_incidents(limit=limit, status=status_filter)
+def get_incidents(
+    limit: int = Query(default=50, ge=1, le=500),
+    status_filter: Optional[str] = Query(default=None, alias="status"),
+    severity: Optional[str] = Query(default=None),
+    device_id: Optional[str] = Query(default=None),
+):
+    """Retrieves list of correlated AIOps incidents with multi-parameter filtering."""
+    incidents = db.get_incidents(limit=limit, status=status_filter, severity=severity, device_id=device_id)
     return {"incidents": incidents, "count": len(incidents)}
 
 
@@ -86,6 +97,59 @@ def get_incident_detail(incident_id: str):
     if not incident:
         raise HTTPException(status_code=404, detail=f"Incident '{incident_id}' not found.")
     return incident
+
+
+@router.get("/incidents/{incident_id}/timeline", status_code=status.HTTP_200_OK)
+def get_incident_timeline(incident_id: str):
+    """Retrieves chronological event timeline linked to a correlated incident."""
+    inc = db.get_incident_by_id(incident_id)
+    if not inc:
+        raise HTTPException(status_code=404, detail=f"Incident '{incident_id}' not found.")
+    from app.ai.context_builder import ContextBuilder
+    ctx = ContextBuilder.build_incident_context(incident_id)
+    return {
+        "incident_id": incident_id,
+        "device_id": inc["device_id"],
+        "timeline": ctx["timeline"],
+        "count": len(ctx["timeline"])
+    }
+
+
+@router.get("/incidents/{incident_id}/evidence", status_code=status.HTTP_200_OK)
+def get_incident_evidence(incident_id: str):
+    """Retrieves complete verified evidence payload collected for a correlated incident."""
+    inc = db.get_incident_by_id(incident_id)
+    if not inc:
+        raise HTTPException(status_code=404, detail=f"Incident '{incident_id}' not found.")
+    from app.ai.context_builder import ContextBuilder
+    ctx = ContextBuilder.build_incident_context(incident_id)
+    return {"incident_id": incident_id, "evidence": ctx}
+
+
+@router.post("/incidents/{incident_id}/investigate", status_code=status.HTTP_200_OK)
+def investigate_incident_openrouter(incident_id: str):
+    """
+    Triggers repeatable OpenRouter AI investigation on a correlated incident.
+    Gathers verified evidence context, sends to OpenRouter, validates JSON, and stores analysis.
+    """
+    inc = db.get_incident_by_id(incident_id)
+    if not inc:
+        raise HTTPException(status_code=404, detail=f"Incident '{incident_id}' not found.")
+    from app.ai.agent import AIAgentService
+    res = AIAgentService.analyze_incident(incident_id)
+    if not res.get("success") and res.get("error") == "AI_PROVIDER_UNAVAILABLE":
+        return JSONResponse(status_code=503, content=res)
+    return res
+
+
+@router.post("/incidents/{incident_id}/resolve", status_code=status.HTTP_200_OK)
+def resolve_incident_endpoint(incident_id: str):
+    """Manually or automatically resolves an open incident and records resolution timestamp."""
+    inc = db.get_incident_by_id(incident_id)
+    if not inc:
+        raise HTTPException(status_code=404, detail=f"Incident '{incident_id}' not found.")
+    resolved_inc = db.resolve_incident(incident_id, summary="Incident manually resolved by operator.")
+    return {"incident_id": incident_id, "status": "RESOLVED", "incident": resolved_inc}
 
 
 @router.get("/devices/{device_id}/history", status_code=status.HTTP_200_OK)

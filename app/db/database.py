@@ -515,13 +515,34 @@ class DatabaseManager:
                 """, (neighbor, neighbor, limit)).fetchall()
             return [dict(r) for r in rows]
 
-    def get_events(self, limit: int = 100, device_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    def get_events(
+        self,
+        limit: int = 100,
+        device_id: Optional[str] = None,
+        severity: Optional[str] = None,
+        status: Optional[str] = None,
+        event_type: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        query = "SELECT * FROM events WHERE 1=1"
+        params: List[Any] = []
+        if device_id:
+            query += " AND device_id = ?"
+            params.append(device_id)
+        if severity:
+            query += " AND severity = ?"
+            params.append(severity)
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        if event_type:
+            query += " AND type = ?"
+            params.append(event_type)
+
+        query += " ORDER BY timestamp DESC LIMIT ?"
+        params.append(limit)
+
         with self.get_connection() as conn:
-            if device_id:
-                rows = conn.execute("SELECT * FROM events WHERE device_id = ? ORDER BY timestamp DESC LIMIT ?", (device_id, limit)).fetchall()
-            else:
-                rows = conn.execute("SELECT * FROM events ORDER BY timestamp DESC LIMIT ?", (limit,)).fetchall()
-            
+            rows = conn.execute(query, params).fetchall()
             res = []
             for r in rows:
                 d = dict(r)
@@ -549,7 +570,7 @@ class DatabaseManager:
     def get_open_incident_by_fingerprint(self, device_id: str, fingerprint: str) -> Optional[Dict[str, Any]]:
         with self.get_connection() as conn:
             rows = conn.execute("""
-                SELECT * FROM incidents WHERE device_id = ? AND status IN ('OPEN', 'ACKNOWLEDGED') ORDER BY created_at DESC
+                SELECT * FROM incidents WHERE device_id = ? AND status IN ('OPEN', 'ACKNOWLEDGED', 'INVESTIGATING', 'IDENTIFIED', 'MITIGATING') ORDER BY created_at DESC
             """, (device_id,)).fetchall()
             for r in rows:
                 d = dict(r)
@@ -561,13 +582,30 @@ class DatabaseManager:
                         return d
             return None
 
-    def get_incidents(self, limit: int = 50, status: Optional[str] = None) -> List[Dict[str, Any]]:
+    def get_incidents(
+        self,
+        limit: int = 50,
+        status: Optional[str] = None,
+        severity: Optional[str] = None,
+        device_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        query = "SELECT * FROM incidents WHERE 1=1"
+        params: List[Any] = []
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        if severity:
+            query += " AND severity = ?"
+            params.append(severity)
+        if device_id:
+            query += " AND device_id = ?"
+            params.append(device_id)
+
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+
         with self.get_connection() as conn:
-            if status:
-                rows = conn.execute("SELECT * FROM incidents WHERE status = ? ORDER BY created_at DESC LIMIT ?", (status, limit)).fetchall()
-            else:
-                rows = conn.execute("SELECT * FROM incidents ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
-            
+            rows = conn.execute(query, params).fetchall()
             res = []
             for r in rows:
                 d = dict(r)
@@ -583,6 +621,20 @@ class DatabaseManager:
                         pass
                 res.append(d)
             return res
+
+    def resolve_incident(self, incident_id: str, summary: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Resolves an open incident, updates status to RESOLVED, and sets updated_at timestamp."""
+        from datetime import datetime, timezone
+        now_ts = datetime.now(timezone.utc).isoformat()
+        with self.get_connection() as conn:
+            inc = self.get_incident_by_id(incident_id)
+            if not inc:
+                return None
+            conn.execute("""
+                UPDATE incidents SET status = 'RESOLVED', updated_at = ?, summary = COALESCE(?, summary) WHERE incident_id = ?
+            """, (now_ts, summary, incident_id))
+            conn.commit()
+            return self.get_incident_by_id(incident_id)
 
     def get_incident_by_id(self, incident_id: str) -> Optional[Dict[str, Any]]:
         with self.get_connection() as conn:
