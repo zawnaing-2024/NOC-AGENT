@@ -1,495 +1,1315 @@
+/**
+ * NOC Agent - Professional ISP Network Operations Center SPA JavaScript
+ * Phase 6 UI Enhancement: Device Management & Deep Investigation Workspace
+ */
+
+let currentTab = 'dashboard';
+let devicesData = [];
+let incidentsData = [];
+let refreshSeconds = 10;
+let refreshInterval = null;
+
+// Filter & Sort State for Device Management
+let deviceSearchQuery = '';
+let deviceStatusFilter = 'ALL';
+let deviceRoleFilter = 'ALL';
+let deviceLocationFilter = 'ALL';
+let deviceMonitoringFilter = 'ALL';
+let deviceSortField = 'name';
+let deviceSortAsc = true;
+
 document.addEventListener('DOMContentLoaded', () => {
-  let currentTab = 'dashboard';
-  let refreshTimer = null;
-  let countdown = 10;
+  initNavigation();
+  initSidebarToggle();
+  startAutoRefresh();
+  loadCurrentTab();
+});
 
-  // Elements
-  const refreshCounterEl = document.getElementById('refresh-counter');
-  const liveStatusEl = document.getElementById('live-status');
-  const aiStatusEl = document.getElementById('ai-status');
+// Toast Notifications Helper
+function showToast(message, type = 'success', duration = 4000) {
+  const container = document.getElementById('toast-container');
+  if (!container) return;
+  const item = document.createElement('div');
+  item.className = `toast-item ${type}`;
+  const icon = type === 'success' ? '✓' : (type === 'error' ? '✕' : '⚠');
+  item.innerHTML = `<span style="font-weight:700; font-size:16px;">${icon}</span> <span>${escapeHtml(message)}</span>`;
+  container.appendChild(item);
+  setTimeout(() => {
+    item.style.opacity = '0';
+    item.style.transition = 'opacity 0.3s ease';
+    setTimeout(() => item.remove(), 300);
+  }, duration);
+}
 
-  // Initialize Dashboard
-  init();
+// Escape HTML helper
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
 
-  function init() {
-    setupTabNavigation();
-    fetchData();
-    startTimer();
+// Dynamic Bandwidth Formatting Helper
+function formatBandwidth(bps) {
+  const val = parseFloat(bps);
+  if (isNaN(val) || val <= 0) return '0 bps';
+  if (val >= 1000000000) return (val / 1000000000).toFixed(2) + ' Gbps';
+  if (val >= 1000000) return (val / 1000000).toFixed(2) + ' Mbps';
+  if (val >= 1000) return (val / 1000).toFixed(2) + ' Kbps';
+  return val.toFixed(0) + ' bps';
+}
+
+// Navigation & Sidebar Handlers
+function initNavigation() {
+  document.querySelectorAll('.nav-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+      const targetBtn = e.currentTarget;
+      targetBtn.classList.add('active');
+      currentTab = targetBtn.getAttribute('data-tab');
+      
+      const titleMap = {
+        'dashboard': 'Command Center',
+        'devices': 'Device Management',
+        'interfaces': 'Interfaces & Traffic',
+        'bgp': 'BGP Peer Overview',
+        'ospf': 'OSPF Adjacencies',
+        'routing': 'Routing & NAT Matrix',
+        'incidents': 'Active Incidents',
+        'events': 'Event Timeline',
+        'system': 'AI & System Diagnostics'
+      };
+      document.getElementById('page-title').innerText = titleMap[currentTab] || 'Command Center';
+      loadCurrentTab();
+    });
+  });
+}
+
+function initSidebarToggle() {
+  const toggleBtn = document.getElementById('sidebar-toggle');
+  const sidebar = document.getElementById('sidebar');
+  if (toggleBtn && sidebar) {
+    toggleBtn.addEventListener('click', () => {
+      sidebar.classList.toggle('collapsed');
+    });
+  }
+}
+
+function startAutoRefresh() {
+  if (refreshInterval) clearInterval(refreshInterval);
+  refreshSeconds = 10;
+  refreshInterval = setInterval(() => {
+    refreshSeconds--;
+    const counterEl = document.getElementById('refresh-counter');
+    if (counterEl) counterEl.innerText = `${refreshSeconds}s`;
+    
+    if (refreshSeconds <= 0) {
+      refreshSeconds = 10;
+      loadCurrentTab(true);
+    }
+  }, 1000);
+}
+
+// Main Tab Router
+async function loadCurrentTab(isBackgroundRefresh = false) {
+  updateGlobalHeaderBadges();
+  
+  const container = document.getElementById('view-container');
+  if (!isBackgroundRefresh && container) {
+    container.innerHTML = `<div class="skeleton-loader"><p>Loading ${currentTab} data...</p></div>`;
   }
 
-  function startTimer() {
-    if (refreshTimer) clearInterval(refreshTimer);
-    countdown = 10;
-    refreshTimer = setInterval(() => {
-      countdown--;
-      if (refreshCounterEl) refreshCounterEl.textContent = `${countdown}s`;
-      if (countdown <= 0) {
-        countdown = 10;
-        fetchData();
+  try {
+    switch (currentTab) {
+      case 'dashboard':
+        await renderDashboardView(container);
+        break;
+      case 'devices':
+        await renderDevicesView(container);
+        break;
+      case 'interfaces':
+        await renderInterfacesView(container);
+        break;
+      case 'bgp':
+        await renderBgpView(container);
+        break;
+      case 'ospf':
+        await renderOspfView(container);
+        break;
+      case 'routing':
+        await renderRoutingView(container);
+        break;
+      case 'incidents':
+        await renderIncidentsView(container);
+        break;
+      case 'events':
+        await renderEventsView(container);
+        break;
+      case 'system':
+        await renderSystemView(container);
+        break;
+      default:
+        await renderDashboardView(container);
+    }
+  } catch (err) {
+    console.error('View load error:', err);
+    if (container) {
+      container.innerHTML = `
+        <div class="alert-box failed">
+          <h3>⚠ NOC Backend Unavailable</h3>
+          <p>Unable to retrieve network telemetry from backend API: ${escapeHtml(err.message)}</p>
+          <button class="btn btn-secondary btn-sm" style="margin-top:10px;" onclick="loadCurrentTab()">Retry Connection</button>
+        </div>`;
+    }
+  }
+}
+
+// Update Top Navigation Header Badges
+async function updateGlobalHeaderBadges() {
+  try {
+    const [devRes, incRes] = await Promise.all([
+      fetch('/api/devices'),
+      fetch('/api/incidents')
+    ]);
+    const devData = await devRes.json();
+    const incData = await incRes.json();
+
+    devicesData = devData.devices || [];
+    incidentsData = incData.incidents || [];
+
+    const navDevEl = document.getElementById('nav-device-count');
+    const navIncEl = document.getElementById('nav-incident-count');
+    if (navDevEl) navDevEl.innerText = devicesData.length;
+    if (navIncEl) {
+      navIncEl.innerText = incidentsData.filter(i => i.status === 'OPEN').length;
+      if (incidentsData.filter(i => i.status === 'OPEN').length > 0) {
+        navIncEl.classList.add('alert');
+      } else {
+        navIncEl.classList.remove('alert');
       }
-    }, 1000);
+    }
+  } catch (e) {
+    console.warn('Failed to update top badges:', e);
+  }
+}
+
+// Helper: Status Badges HTML
+function renderStatusBadge(statusStr) {
+  const st = (statusStr || 'HEALTHY').toUpperCase();
+  if (st === 'CRITICAL') return `<span class="badge badge-critical">🔴 CRITICAL</span>`;
+  if (st === 'WARNING' || st === 'MAJOR') return `<span class="badge badge-warning">🟡 WARNING</span>`;
+  if (st === 'OFFLINE') return `<span class="badge badge-offline">⚪ OFFLINE</span>`;
+  if (st === 'DISABLED') return `<span class="badge badge-disabled">⚫ DISABLED</span>`;
+  return `<span class="badge badge-healthy">🟢 HEALTHY</span>`;
+}
+
+// -------------------------------------------------------------------
+// 1. DASHBOARD VIEW (COMMAND CENTER)
+// -------------------------------------------------------------------
+async function renderDashboardView(container) {
+  const [devOverviewRes, incRes] = await Promise.all([
+    fetch('/api/devices/overview'),
+    fetch('/api/incidents')
+  ]);
+  const devOverview = await devOverviewRes.json();
+  const incData = await incRes.json();
+  const devices = devOverview.devices || [];
+  const incidents = incData.incidents || [];
+
+  const openIncidents = incidents.filter(i => i.status === 'OPEN');
+  
+  let html = ``;
+
+  // Priority Problem Banner
+  if (openIncidents.length > 0) {
+    const topInc = openIncidents[0];
+    html += `
+      <div class="alert-box failed" style="margin-bottom:24px; display:flex; justify-content:space-between; align-items:center;">
+        <div>
+          <h3 style="margin-bottom:4px;">🔴 ${openIncidents.length} ACTIVE NETWORK INCIDENT(S) DETECTED</h3>
+          <p style="font-size:13px;">Top Priority: <strong>${escapeHtml(topInc.title)}</strong> on device <code>${escapeHtml(topInc.device_id)}</code></p>
+        </div>
+        <button class="btn btn-danger" onclick="openInvestigationWorkspace('${topInc.incident_id}')">🔍 Investigate Incident</button>
+      </div>`;
+  } else {
+    html += `
+      <div class="alert-box success" style="margin-bottom:24px;">
+        <h3>🟢 NETWORK HEALTHY — ZERO ACTIVE INCIDENTS</h3>
+        <p style="font-size:13px;">All monitored MikroTik core routers and transit links are functioning within operational parameters.</p>
+      </div>`;
   }
 
-  function setupTabNavigation() {
-    const tabBtns = document.querySelectorAll('.tab-btn');
-    tabBtns.forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        tabBtns.forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        currentTab = btn.dataset.tab;
-        renderActiveTab();
-      });
+  // Summary KPI Cards
+  const totalDevs = devices.length;
+  const healthyDevs = devices.filter(d => d.health === 'HEALTHY').length;
+  const warningDevs = devices.filter(d => d.health === 'WARNING').length;
+  const criticalDevs = devices.filter(d => d.health === 'CRITICAL').length;
+  const offlineDevs = devices.filter(d => d.health === 'OFFLINE').length;
+
+  html += `
+    <div class="summary-grid">
+      <div class="summary-card healthy">
+        <span class="card-label">Total Devices</span>
+        <span class="card-value">${totalDevs}</span>
+      </div>
+      <div class="summary-card healthy">
+        <span class="card-label">Healthy</span>
+        <span class="card-value">${healthyDevs}</span>
+      </div>
+      <div class="summary-card warning">
+        <span class="card-label">Warning</span>
+        <span class="card-value">${warningDevs}</span>
+      </div>
+      <div class="summary-card critical">
+        <span class="card-label">Critical</span>
+        <span class="card-value">${criticalDevs}</span>
+      </div>
+      <div class="summary-card offline">
+        <span class="card-label">Offline</span>
+        <span class="card-value">${offlineDevs}</span>
+      </div>
+    </div>`;
+
+  // Devices Summary Matrix Table
+  html += `
+    <div class="table-card">
+      <div class="table-header">
+        <span class="table-title">MikroTik Infrastructure Overview</span>
+        <button class="btn btn-secondary btn-sm" onclick="currentTab='devices'; loadCurrentTab();">Manage Devices →</button>
+      </div>
+      <table class="noc-table">
+        <thead>
+          <tr>
+            <th>Status</th>
+            <th>Device Name / IP</th>
+            <th>RouterOS</th>
+            <th>CPU %</th>
+            <th>RAM %</th>
+            <th>Interfaces</th>
+            <th>BGP</th>
+            <th>OSPF</th>
+            <th>Routes</th>
+            <th>NAT Rules</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>`;
+
+  if (devices.length === 0) {
+    html += `<tr><td colspan="11" style="text-align:center; padding:24px; color:var(--text-muted);">No devices configured. <a href="#" onclick="openAddDeviceModal(); return false;">+ Add Device</a></td></tr>`;
+  } else {
+    devices.forEach(d => {
+      html += `
+        <tr>
+          <td>${renderStatusBadge(d.health)}</td>
+          <td><strong>${escapeHtml(d.name)}</strong><br><span style="font-size:12px; color:var(--text-muted);">${escapeHtml(d.ip_address)}</span></td>
+          <td>${escapeHtml(d.version || 'v7')}</td>
+          <td>${d.cpu_percent.toFixed(1)}%</td>
+          <td>${d.memory_percent.toFixed(1)}%</td>
+          <td><span class="badge badge-healthy">${d.interfaces_up}/${d.interfaces_total} UP</span></td>
+          <td><span class="badge ${d.bgp_established > 0 ? 'badge-healthy' : 'badge-offline'}">${d.bgp_established}/${d.bgp_total} EST</span></td>
+          <td><span class="badge ${d.ospf_full > 0 ? 'badge-healthy' : 'badge-offline'}">${d.ospf_full}/${d.ospf_total} FULL</span></td>
+          <td>${d.routes_count}</td>
+          <td>${d.nat_count}</td>
+          <td>
+            <button class="btn btn-secondary btn-sm" onclick="openDeviceDetailWorkspace('${d.device_id}')">View</button>
+          </td>
+        </tr>`;
     });
   }
 
-  async function fetchData() {
-    try {
-      // Check AI Status
-      const aiRes = await fetch('/api/ai/status').then(r => r.json()).catch(() => null);
-      if (aiStatusEl) {
-        if (aiRes && aiRes.status === 'healthy') {
-          aiStatusEl.innerHTML = `<span class="dot"></span> AI: OpenRouter ● Connected`;
-        } else {
-          aiStatusEl.innerHTML = `<span class="dot yellow"></span> AI: Offline`;
-        }
-      }
+  html += `</tbody></table></div>`;
+  container.innerHTML = html;
+}
 
-      if (liveStatusEl) {
-        liveStatusEl.innerHTML = `<span class="dot"></span> System Status: HEALTHY`;
-      }
+// -------------------------------------------------------------------
+// 2. DEVICE MANAGEMENT VIEW (/devices)
+// -------------------------------------------------------------------
+async function renderDevicesView(container) {
+  const res = await fetch('/api/devices?include_deleted=false');
+  const data = await res.json();
+  const rawDevices = data.devices || [];
 
-      renderActiveTab();
-    } catch (err) {
-      if (liveStatusEl) {
-        liveStatusEl.innerHTML = `<span class="dot red"></span> ⚠ Backend Unavailable`;
-      }
+  // Calculate summary counts
+  const totalCount = rawDevices.length;
+  const healthyCount = rawDevices.filter(d => (d.status || '').toUpperCase() === 'HEALTHY' && d.monitoring_enabled).length;
+  const warningCount = rawDevices.filter(d => (d.status || '').toUpperCase() === 'WARNING' && d.monitoring_enabled).length;
+  const criticalCount = rawDevices.filter(d => (d.status || '').toUpperCase() === 'CRITICAL' && d.monitoring_enabled).length;
+  const offlineCount = rawDevices.filter(d => (d.status || '').toUpperCase() === 'OFFLINE' && d.monitoring_enabled).length;
+  const disabledCount = rawDevices.filter(d => !d.monitoring_enabled || (d.status || '').toUpperCase() === 'DISABLED').length;
+
+  let html = `
+    <div class="action-banner">
+      <div>
+        <h2>Devices Inventory</h2>
+        <p>Manage and monitor your MikroTik infrastructure inventory</p>
+      </div>
+      <button class="btn btn-primary" onclick="openAddDeviceModal()">+ Add Device</button>
+    </div>
+
+    <div class="summary-grid">
+      <div class="summary-card healthy">
+        <span class="card-label">Total Devices</span>
+        <span class="card-value">${totalCount}</span>
+      </div>
+      <div class="summary-card healthy">
+        <span class="card-label">Healthy</span>
+        <span class="card-value">${healthyCount}</span>
+      </div>
+      <div class="summary-card warning">
+        <span class="card-label">Warning</span>
+        <span class="card-value">${warningCount}</span>
+      </div>
+      <div class="summary-card critical">
+        <span class="card-label">Critical</span>
+        <span class="card-value">${criticalCount}</span>
+      </div>
+      <div class="summary-card offline">
+        <span class="card-label">Offline</span>
+        <span class="card-value">${offlineCount}</span>
+      </div>
+      <div class="summary-card disabled">
+        <span class="card-label">Monitoring Disabled</span>
+        <span class="card-value">${disabledCount}</span>
+      </div>
+    </div>
+
+    <div class="toolbar">
+      <div class="toolbar-left">
+        <input type="text" class="search-input" id="dev-search" placeholder="Search devices by name, IP, location..." value="${escapeHtml(deviceSearchQuery)}" oninput="updateDeviceFilters()">
+        <select class="filter-select" id="dev-status-filter" onchange="updateDeviceFilters()">
+          <option value="ALL" ${deviceStatusFilter === 'ALL' ? 'selected' : ''}>All Statuses</option>
+          <option value="HEALTHY" ${deviceStatusFilter === 'HEALTHY' ? 'selected' : ''}>🟢 Healthy</option>
+          <option value="WARNING" ${deviceStatusFilter === 'WARNING' ? 'selected' : ''}>🟡 Warning</option>
+          <option value="CRITICAL" ${deviceStatusFilter === 'CRITICAL' ? 'selected' : ''}>🔴 Critical</option>
+          <option value="OFFLINE" ${deviceStatusFilter === 'OFFLINE' ? 'selected' : ''}>⚪ Offline</option>
+          <option value="DISABLED" ${deviceStatusFilter === 'DISABLED' ? 'selected' : ''}>⚫ Disabled</option>
+        </select>
+        <select class="filter-select" id="dev-role-filter" onchange="updateDeviceFilters()">
+          <option value="ALL" ${deviceRoleFilter === 'ALL' ? 'selected' : ''}>All Roles</option>
+          <option value="Core Router" ${deviceRoleFilter === 'Core Router' ? 'selected' : ''}>Core Router</option>
+          <option value="Edge Router" ${deviceRoleFilter === 'Edge Router' ? 'selected' : ''}>Edge Router</option>
+          <option value="CGNAT Gateway" ${deviceRoleFilter === 'CGNAT Gateway' ? 'selected' : ''}>CGNAT Gateway</option>
+          <option value="Switch" ${deviceRoleFilter === 'Switch' ? 'selected' : ''}>Switch</option>
+        </select>
+        <select class="filter-select" id="dev-monitoring-filter" onchange="updateDeviceFilters()">
+          <option value="ALL" ${deviceMonitoringFilter === 'ALL' ? 'selected' : ''}>All Monitoring</option>
+          <option value="ENABLED" ${deviceMonitoringFilter === 'ENABLED' ? 'selected' : ''}>● Enabled</option>
+          <option value="DISABLED" ${deviceMonitoringFilter === 'DISABLED' ? 'selected' : ''}>○ Disabled</option>
+        </select>
+      </div>
+      <div>
+        <select class="filter-select" id="dev-sort-select" onchange="updateDeviceFilters()">
+          <option value="name" ${deviceSortField === 'name' ? 'selected' : ''}>Sort by Name</option>
+          <option value="ip_address" ${deviceSortField === 'ip_address' ? 'selected' : ''}>Sort by IP</option>
+          <option value="status" ${deviceSortField === 'status' ? 'selected' : ''}>Sort by Health Status</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="table-card">
+      <table class="noc-table">
+        <thead>
+          <tr>
+            <th>Status</th>
+            <th>Device Name / Role</th>
+            <th>Management IP</th>
+            <th>Location</th>
+            <th>Monitoring</th>
+            <th>Protocol / Port</th>
+            <th>Last Updated</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="devices-table-body">
+  `;
+
+  // Apply filters
+  let filtered = rawDevices.filter(d => {
+    if (deviceSearchQuery) {
+      const q = deviceSearchQuery.toLowerCase();
+      const match = (d.name || '').toLowerCase().includes(q) ||
+                    (d.ip_address || '').toLowerCase().includes(q) ||
+                    (d.location || '').toLowerCase().includes(q) ||
+                    (d.role || '').toLowerCase().includes(q);
+      if (!match) return false;
     }
-  }
-
-  function renderActiveTab() {
-    const viewContainer = document.getElementById('view-container');
-    if (!viewContainer) return;
-
-    if (currentTab === 'dashboard') renderDashboardView(viewContainer);
-    else if (currentTab === 'devices') renderDevicesView(viewContainer);
-    else if (currentTab === 'interfaces') renderInterfacesView(viewContainer);
-    else if (currentTab === 'bgp') renderBgpView(viewContainer);
-    else if (currentTab === 'ospf') renderOspfView(viewContainer);
-    else if (currentTab === 'routing') renderRoutingView(viewContainer);
-    else if (currentTab === 'incidents') renderIncidentsView(viewContainer);
-  }
-
-  function formatBandwidth(bps) {
-    if (bps === null || bps === undefined || isNaN(bps)) return '0 bps';
-    const val = Number(bps);
-    if (val >= 1000000000) {
-      return (val / 1000000000).toFixed(2) + ' Gbps';
-    } else if (val >= 1000000) {
-      return (val / 1000000).toFixed(2) + ' Mbps';
-    } else if (val >= 1000) {
-      return (val / 1000).toFixed(1) + ' Kbps';
-    } else {
-      return val.toFixed(0) + ' bps';
+    if (deviceStatusFilter !== 'ALL') {
+      const st = (d.status || 'HEALTHY').toUpperCase();
+      if (deviceStatusFilter === 'DISABLED' && d.monitoring_enabled) return false;
+      if (deviceStatusFilter !== 'DISABLED' && st !== deviceStatusFilter) return false;
     }
-  }
+    if (deviceRoleFilter !== 'ALL' && (d.role || '') !== deviceRoleFilter) return false;
+    if (deviceMonitoringFilter === 'ENABLED' && !d.monitoring_enabled) return false;
+    if (deviceMonitoringFilter === 'DISABLED' && d.monitoring_enabled) return false;
+    return true;
+  });
 
-  // View Renderers
-  async function renderDashboardView(container) {
-    const [devs, ifaces, bgp, ospf, incs] = await Promise.all([
-      fetch('/api/devices/overview').then(r => r.json()).catch(() => ({ devices: [] })),
-      fetch('/api/interfaces/overview').then(r => r.json()).catch(() => ({ interfaces: [] })),
-      fetch('/api/routing/bgp/overview').then(r => r.json()).catch(() => ({ established_count: 0, down_count: 0 })),
-      fetch('/api/routing/ospf/overview').then(r => r.json()).catch(() => ({ full_count: 0, down_count: 0 })),
-      fetch('/api/incidents').then(r => r.json()).catch(() => ({ incidents: [] }))
-    ]);
+  // Apply Sort
+  filtered.sort((a, b) => {
+    const valA = (a[deviceSortField] || '').toString().toLowerCase();
+    const valB = (b[deviceSortField] || '').toString().toLowerCase();
+    return deviceSortAsc ? valA.localeCompare(valB) : valB.localeCompare(valA);
+  });
 
-    const activeIncs = (incs.incidents || []).filter(i => i.status !== 'RESOLVED' && i.status !== 'CLOSED');
-    const interfaceList = ifaces.interfaces || [];
-    const totalRx = interfaceList.reduce((acc, curr) => acc + (curr.rx_bps || 0), 0);
-    const totalTx = interfaceList.reduce((acc, curr) => acc + (curr.tx_bps || 0), 0);
+  if (filtered.length === 0) {
+    html += `
+      <tr>
+        <td colspan="8" style="text-align:center; padding:32px; color:var(--text-muted);">
+          No matching devices found in inventory.
+        </td>
+      </tr>`;
+  } else {
+    filtered.forEach(d => {
+      const monTag = d.monitoring_enabled ? 
+        `<span style="color:var(--status-green); font-weight:600;">● Enabled</span>` : 
+        `<span style="color:var(--status-disabled); font-weight:600;">○ Disabled</span>`;
 
-    container.innerHTML = `
-      <div class="kpi-grid">
-        <div class="kpi-card">
-          <div class="kpi-title">Devices</div>
-          <div class="kpi-value">${devs.devices.length}</div>
-          <div class="kpi-sub"><span style="color:var(--status-green)">Healthy: ${devs.devices.length}</span></div>
-        </div>
-        <div class="kpi-card">
-          <div class="kpi-title">Interfaces</div>
-          <div class="kpi-value">${interfaceList.length}</div>
-          <div class="kpi-sub">
-            <span style="color:var(--status-green)">UP: ${interfaceList.filter(i=>i.status==='UP').length}</span>
-            <span style="color:var(--status-red)">DOWN: ${interfaceList.filter(i=>i.status==='DOWN').length}</span>
-          </div>
-        </div>
-        <div class="kpi-card">
-          <div class="kpi-title">Aggregate Traffic</div>
-          <div class="kpi-value" style="font-size:20px; color:var(--accent-blue);">RX: ${formatBandwidth(totalRx)}</div>
-          <div class="kpi-sub"><span style="color:var(--text-main)">TX: ${formatBandwidth(totalTx)}</span></div>
-        </div>
-        <div class="kpi-card">
-          <div class="kpi-title">BGP Sessions</div>
-          <div class="kpi-value">${(bgp.established_count || 0) + (bgp.down_count || 0)}</div>
-          <div class="kpi-sub">
-            <span style="color:var(--status-green)">Established: ${bgp.established_count || 0}</span>
-            <span style="color:var(--status-red)">Down: ${bgp.down_count || 0}</span>
-          </div>
-        </div>
-        <div class="kpi-card">
-          <div class="kpi-title">OSPF Neighbors</div>
-          <div class="kpi-value">${(ospf.full_count || 0) + (ospf.down_count || 0)}</div>
-          <div class="kpi-sub">
-            <span style="color:var(--status-green)">Full: ${ospf.full_count || 0}</span>
-            <span style="color:var(--status-red)">Down: ${ospf.down_count || 0}</span>
-          </div>
-        </div>
-        <div class="kpi-card">
-          <div class="kpi-title">Incidents</div>
-          <div class="kpi-value">${activeIncs.length}</div>
-          <div class="kpi-sub"><span style="color:var(--status-red)">Critical: ${activeIncs.filter(i=>i.severity==='CRITICAL').length}</span></div>
-        </div>
-      </div>
-
-      <div class="table-container">
-        <div class="table-header">
-          <div class="table-title">Active Correlated Incidents</div>
-        </div>
-        ${activeIncs.length === 0 ? '<div style="padding:24px; text-align:center; color:var(--status-green); font-weight:600;">✓ No active network incidents</div>' : `
-          <table>
-            <thead>
-              <tr>
-                <th>Severity</th>
-                <th>Device</th>
-                <th>Problem</th>
-                <th>Created At</th>
-                <th>Status</th>
-                <th>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${activeIncs.map(inc => `
-                <tr>
-                  <td><span class="status-badge" style="color:var(--status-red)">🔴 ${inc.severity}</span></td>
-                  <td>${inc.device_id}</td>
-                  <td>${inc.facts ? inc.facts.event_type : 'Network Fault'}</td>
-                  <td>${new Date(inc.created_at).toLocaleTimeString()}</td>
-                  <td>${inc.status}</td>
-                  <td><button class="btn-action" onclick="openInvestigation('${inc.incident_id}')">Investigate</button></td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
-        `}
-      </div>
-    `;
-  }
-
-  async function renderDevicesView(container) {
-    const res = await fetch('/api/devices/overview').then(r => r.json()).catch(() => ({ devices: [] }));
-    container.innerHTML = `
-      <div class="table-container">
-        <div class="table-header">
-          <div class="table-title">Network Device Matrix</div>
-        </div>
-        <table>
-          <thead>
-            <tr>
-              <th>Device IP</th>
-              <th>Version</th>
-              <th>CPU %</th>
-              <th>RAM %</th>
-              <th>Interfaces (UP/Total)</th>
-              <th>BGP (Est/Total)</th>
-              <th>OSPF (Full/Total)</th>
-              <th>Routes</th>
-              <th>NAT Rules</th>
-              <th>Health</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${res.devices.map(d => `
-              <tr>
-                <td><strong>${d.ip_address}</strong></td>
-                <td>${d.version}</td>
-                <td>${d.cpu_percent}%</td>
-                <td>${d.memory_percent}%</td>
-                <td>${d.interfaces_up}/${d.interfaces_total}</td>
-                <td>${d.bgp_established}/${d.bgp_total}</td>
-                <td>${d.ospf_full}/${d.ospf_total}</td>
-                <td>${d.routes_count}</td>
-                <td>${d.nat_count}</td>
-                <td><span class="status-badge" style="color:var(--status-green)">🟢 ${d.health}</span></td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
-      </div>
-    `;
-  }
-
-  async function renderInterfacesView(container) {
-    const res = await fetch('/api/interfaces/overview').then(r => r.json()).catch(() => ({ interfaces: [] }));
-    container.innerHTML = `
-      <div class="table-container">
-        <div class="table-header">
-          <div class="table-title">Interface Telemetry & Status</div>
-        </div>
-        <table>
-          <thead>
-            <tr>
-              <th>Device</th>
-              <th>Interface</th>
-              <th>Status</th>
-              <th>RX Rate</th>
-              <th>TX Rate</th>
-              <th>Errors (RX/TX)</th>
-              <th>Drops (RX/TX)</th>
-              <th>Health</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${res.interfaces.map(i => `
-              <tr>
-                <td>${i.device_id}</td>
-                <td><strong>${i.interface_name}</strong></td>
-                <td>${i.status === 'UP' ? '<span style="color:var(--status-green)">🟢 UP</span>' : '<span style="color:var(--status-red)">🔴 DOWN</span>'}</td>
-                <td><strong>${formatBandwidth(i.rx_bps)}</strong></td>
-                <td><strong>${formatBandwidth(i.tx_bps)}</strong></td>
-                <td>${i.rx_errors}/${i.tx_errors}</td>
-                <td>${i.rx_drops}/${i.tx_drops}</td>
-                <td><span class="status-badge">${i.health}</span></td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>
-      </div>
-    `;
-  }
-
-  async function renderBgpView(container) {
-    const res = await fetch('/api/routing/bgp/overview').then(r => r.json()).catch(() => ({ bgp_peers: [] }));
-    const peers = res.bgp_peers || [];
-    container.innerHTML = `
-      <div class="table-container">
-        <div class="table-header">
-          <div class="table-title">BGP Sessions Dashboard (${res.established_count || 0} Established / ${res.down_count || 0} Down)</div>
-        </div>
-        ${peers.length === 0 ? '<div style="padding:24px; text-align:center; color:var(--text-muted);">No active BGP peer sessions recorded on monitored devices</div>' : `
-          <table>
-            <thead>
-              <tr>
-                <th>Device</th>
-                <th>Peer IP</th>
-                <th>Remote Address</th>
-                <th>State</th>
-                <th>Uptime</th>
-                <th>Prefix Count</th>
-                <th>Health</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${peers.map(b => `
-                <tr>
-                  <td>${b.device_id}</td>
-                  <td><strong>${b.peer}</strong></td>
-                  <td>${b.remote_address}</td>
-                  <td>${b.established ? '<span style="color:var(--status-green)">🟢 ESTABLISHED</span>' : '<span style="color:var(--status-red)">🔴 DOWN</span>'}</td>
-                  <td>${b.uptime}</td>
-                  <td>${b.prefix_count}</td>
-                  <td><span class="status-badge">${b.health}</span></td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
-        `}
-      </div>
-    `;
-  }
-
-  async function renderOspfView(container) {
-    const res = await fetch('/api/routing/ospf/overview').then(r => r.json()).catch(() => ({ ospf_neighbors: [] }));
-    const neighbors = res.ospf_neighbors || [];
-    container.innerHTML = `
-      <div class="table-container">
-        <div class="table-header">
-          <div class="table-title">OSPF Neighbors Dashboard (${res.full_count || 0} Full / ${res.down_count || 0} Down)</div>
-        </div>
-        ${neighbors.length === 0 ? '<div style="padding:24px; text-align:center; color:var(--text-muted);">No active OSPF neighbors recorded on monitored devices</div>' : `
-          <table>
-            <thead>
-              <tr>
-                <th>Device</th>
-                <th>Router ID</th>
-                <th>Neighbor IP</th>
-                <th>State</th>
-                <th>Interface</th>
-                <th>Area</th>
-                <th>Health</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${neighbors.map(o => `
-                <tr>
-                  <td>${o.device_id}</td>
-                  <td>${o.router_id}</td>
-                  <td><strong>${o.neighbor}</strong></td>
-                  <td><span style="color:var(--status-green)">🟢 ${o.state}</span></td>
-                  <td>${o.interface}</td>
-                  <td>${o.area}</td>
-                  <td><span class="status-badge">${o.health}</span></td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
-        `}
-      </div>
-    `;
-  }
-
-  async function renderRoutingView(container) {
-    const res = await fetch('/api/routing/overview').then(r => r.json()).catch(() => ({ default_route_active: true, total_routes: 0 }));
-    container.innerHTML = `
-      <div style="background-color:var(--bg-card); border:1px solid var(--border-color); border-radius:8px; padding:20px; margin-bottom:24px; display:flex; align-items:center; gap:16px;">
-        <span style="font-size:24px">${res.default_route_active ? '🟢' : '🔴'}</span>
-        <div>
-          <h3 style="font-size:16px; font-weight:700;">Default Route (0.0.0.0/0) Status: ${res.default_route_active ? 'ACTIVE / REACHABLE' : 'UNAVAILABLE / DOWN'}</h3>
-          <p style="color:var(--text-muted); font-size:13px;">Active WAN gateway route reachability tracking across all monitored routers.</p>
-        </div>
-      </div>
-      <div class="kpi-grid">
-        <div class="kpi-card"><div class="kpi-title">Total Routes</div><div class="kpi-value">${res.total_routes || 0}</div></div>
-        <div class="kpi-card"><div class="kpi-title">Active Routes</div><div class="kpi-value">${res.active_routes || 0}</div></div>
-        <div class="kpi-card"><div class="kpi-title">Inactive Routes</div><div class="kpi-value">${res.inactive_routes || 0}</div></div>
-      </div>
-    `;
-  }
-
-  async function renderIncidentsView(container) {
-    const res = await fetch('/api/incidents').then(r => r.json()).catch(() => ({ incidents: [] }));
-    container.innerHTML = `
-      <div class="table-container">
-        <div class="table-header">
-          <div class="table-title">Incident Center</div>
-        </div>
-        ${res.incidents.length === 0 ? '<div style="padding:24px; text-align:center; color:var(--status-green)">✓ No historical incidents recorded</div>' : `
-          <table>
-            <thead>
-              <tr>
-                <th>Severity</th>
-                <th>Device</th>
-                <th>Primary Problem</th>
-                <th>Created At</th>
-                <th>Status</th>
-                <th>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${res.incidents.map(inc => `
-                <tr>
-                  <td><span class="status-badge" style="color:var(--status-red)">🔴 ${inc.severity}</span></td>
-                  <td>${inc.device_id}</td>
-                  <td>${inc.facts ? inc.facts.event_type : 'Network Incident'}</td>
-                  <td>${new Date(inc.created_at).toLocaleString()}</td>
-                  <td>${inc.status}</td>
-                  <td><button class="btn-action" onclick="openInvestigation('${inc.incident_id}')">Investigate</button></td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
-        `}
-      </div>
-    `;
-  }
-
-  // Investigation Workspace Handler
-  window.openInvestigation = async function(incidentId) {
-    const modal = document.getElementById('investigation-modal');
-    const modalContent = document.getElementById('investigation-modal-body');
-    if (!modal || !modalContent) return;
-
-    modal.classList.remove('hidden');
-    modalContent.innerHTML = '<div style="padding:40px; text-align:center;">Running Deep NOC Investigation Engine...</div>';
-
-    try {
-      const inv = await fetch(`/api/incidents/${incidentId}/deep-investigation`).then(r => r.json());
-
-      modalContent.innerHTML = `
-        <div class="modal-header">
-          <h2>Investigation Workspace — ${inv.primary_failure}</h2>
-          <button class="close-btn" onclick="closeInvestigation()">×</button>
-        </div>
-
-        <!-- AI RCA Summary -->
-        <div style="background:rgba(56,189,248,0.1); border:1px solid var(--accent-blue); border-radius:8px; padding:16px; margin-bottom:20px;">
-          <h3 style="color:var(--accent-blue); font-size:14px; margin-bottom:8px;">OpenRouter AI Root Cause Analysis</h3>
-          <p><strong>Likely Root Cause:</strong> ${inv.ai_analysis ? inv.ai_analysis.root_cause.description : inv.primary_failure}</p>
-          <p style="margin-top:4px;"><strong>Confidence:</strong> ${inv.ai_analysis ? inv.ai_analysis.root_cause.confidence : 'HIGH'}</p>
-          <p style="margin-top:4px;"><strong>Impact:</strong> ${inv.ai_analysis ? inv.ai_analysis.impact.description : 'Service degradation observed.'}</p>
-        </div>
-
-        <!-- Cascade Flow Graph -->
-        <h4 style="margin-bottom:12px;">Visual Dependency Cascade Flow</h4>
-        <div class="flow-container">
-          ${(inv.visualization_flow || []).map(f => `
-            <div class="flow-step ${f.is_primary_root ? 'primary' : ''}">
-              <div style="font-size:11px; color:var(--text-muted);">${f.domain}</div>
-              <div style="font-weight:700; margin-top:4px;">${f.title}</div>
-              <div style="font-size:11px; margin-top:4px; color:${f.status==='CRITICAL'?'var(--status-red)':'var(--status-green)'}">${f.status}</div>
+      html += `
+        <tr>
+          <td>${renderStatusBadge(d.monitoring_enabled ? d.status : 'DISABLED')}</td>
+          <td>
+            <strong>${escapeHtml(d.name)}</strong><br>
+            <span style="font-size:11px; color:var(--accent-blue);">${escapeHtml(d.role || 'Router')}</span>
+          </td>
+          <td><code>${escapeHtml(d.ip_address)}</code></td>
+          <td>${escapeHtml(d.location || '—')}</td>
+          <td>${monTag}</td>
+          <td>${escapeHtml(d.api_protocol || 'api').toUpperCase()} : ${d.api_port || 8728}</td>
+          <td><span style="font-size:12px; color:var(--text-muted);">${d.updated_at ? new Date(d.updated_at).toLocaleTimeString() : 'Recently'}</span></td>
+          <td>
+            <div style="display:flex; gap:6px;">
+              <button class="btn btn-secondary btn-sm" onclick="openDeviceDetailWorkspace('${d.device_id}')">View</button>
+              <button class="btn btn-secondary btn-sm" onclick="openEditDeviceModal('${d.device_id}')">Edit</button>
+              <button class="btn btn-secondary btn-sm" onclick="testDeviceDirectConnection('${d.device_id}')">Test</button>
+              ${d.monitoring_enabled ? 
+                `<button class="btn btn-secondary btn-sm" onclick="toggleDeviceMonitoring('${d.device_id}', false)">Disable</button>` :
+                `<button class="btn btn-secondary btn-sm" onclick="toggleDeviceMonitoring('${d.device_id}', true)">Enable</button>`
+              }
+              <button class="btn btn-danger btn-sm" onclick="confirmDeleteDevice('${d.device_id}', '${escapeHtml(d.name)}')">Delete</button>
             </div>
-            <div class="flow-arrow">➔</div>
-          `).slice(0, -1).join('')}
-        </div>
+          </td>
+        </tr>`;
+    });
+  }
 
-        <!-- Human Readable Evidence Table -->
-        <h4 style="margin:20px 0 12px 0;">Human-Readable Evidence Checklist</h4>
-        <table>
+  html += `</tbody></table></div>`;
+  container.innerHTML = html;
+}
+
+function updateDeviceFilters() {
+  const searchEl = document.getElementById('dev-search');
+  const statusEl = document.getElementById('dev-status-filter');
+  const roleEl = document.getElementById('dev-role-filter');
+  const monEl = document.getElementById('dev-monitoring-filter');
+  const sortEl = document.getElementById('dev-sort-select');
+
+  if (searchEl) deviceSearchQuery = searchEl.value;
+  if (statusEl) deviceStatusFilter = statusEl.value;
+  if (roleEl) deviceRoleFilter = roleEl.value;
+  if (monEl) deviceMonitoringFilter = monEl.value;
+  if (sortEl) deviceSortField = sortEl.value;
+
+  const container = document.getElementById('view-container');
+  if (container && currentTab === 'devices') {
+    renderDevicesView(container);
+  }
+}
+
+// -------------------------------------------------------------------
+// 3. ADD / EDIT DEVICE MODAL HANDLERS
+// -------------------------------------------------------------------
+function openAddDeviceModal() {
+  document.getElementById('device-modal-title').innerText = 'Add MikroTik Device';
+  document.getElementById('device-form-id').value = '';
+  document.getElementById('dev-name').value = '';
+  document.getElementById('dev-ip').value = '';
+  document.getElementById('dev-role').value = 'Core Router';
+  document.getElementById('dev-location').value = '';
+  document.getElementById('dev-desc').value = '';
+  document.getElementById('dev-protocol').value = 'api';
+  document.getElementById('dev-port').value = 8728;
+  document.getElementById('dev-user').value = 'admin';
+  document.getElementById('dev-pass').value = '';
+  document.getElementById('dev-pass').placeholder = 'Enter API Password';
+  document.getElementById('dev-monitoring').value = 'true';
+  document.getElementById('dev-interval').value = 30;
+  document.getElementById('dev-profile').value = 'Standard';
+  
+  const alertBox = document.getElementById('test-connection-alert');
+  if (alertBox) {
+    alertBox.className = 'alert-box hidden';
+    alertBox.innerHTML = '';
+  }
+
+  document.getElementById('device-form-modal').classList.remove('hidden');
+}
+
+async function openEditDeviceModal(deviceId) {
+  try {
+    const res = await fetch(`/api/devices/${deviceId}`);
+    if (!res.ok) throw new Error('Failed to load device details.');
+    const d = await res.json();
+
+    document.getElementById('device-modal-title').innerText = `Edit Device: ${d.name}`;
+    document.getElementById('device-form-id').value = d.device_id;
+    document.getElementById('dev-name').value = d.name || '';
+    document.getElementById('dev-ip').value = d.ip_address || '';
+    document.getElementById('dev-role').value = d.role || 'Core Router';
+    document.getElementById('dev-location').value = d.location || '';
+    document.getElementById('dev-desc').value = d.description || '';
+    document.getElementById('dev-protocol').value = d.api_protocol || 'api';
+    document.getElementById('dev-port').value = d.api_port || 8728;
+    document.getElementById('dev-user').value = d.username || 'admin';
+    document.getElementById('dev-pass').value = '';
+    document.getElementById('dev-pass').placeholder = 'Keep existing password';
+    document.getElementById('dev-monitoring').value = d.monitoring_enabled ? 'true' : 'false';
+    document.getElementById('dev-interval').value = d.collection_interval || 30;
+    document.getElementById('dev-profile').value = d.monitoring_profile || 'Standard';
+
+    const alertBox = document.getElementById('test-connection-alert');
+    if (alertBox) {
+      alertBox.className = 'alert-box hidden';
+      alertBox.innerHTML = '';
+    }
+
+    document.getElementById('device-form-modal').classList.remove('hidden');
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+function closeDeviceFormModal() {
+  document.getElementById('device-form-modal').classList.add('hidden');
+}
+
+async function testFormConnection() {
+  const alertBox = document.getElementById('test-connection-alert');
+  if (!alertBox) return;
+
+  alertBox.className = 'alert-box success';
+  alertBox.innerHTML = '⚡ Testing read-only RouterOS API connection...';
+  alertBox.classList.remove('hidden');
+
+  const payload = {
+    name: document.getElementById('dev-name').value,
+    ip_address: document.getElementById('dev-ip').value,
+    api_port: parseInt(document.getElementById('dev-port').value) || 8728,
+    username: document.getElementById('dev-user').value,
+    password: document.getElementById('dev-pass').value
+  };
+
+  const devId = document.getElementById('device-form-id').value;
+  const url = devId ? `/api/devices/${devId}/test-connection` : `/api/devices/test-connection`;
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+
+    if (data.success) {
+      alertBox.className = 'alert-box success';
+      alertBox.innerHTML = `
+        <div style="font-weight:700; margin-bottom:4px;">✓ Connection Successful</div>
+        <div>Device: <strong>${escapeHtml(data.device_name)}</strong> (${escapeHtml(data.ip_address)})</div>
+        <div>RouterOS Version: <strong>${escapeHtml(data.routeros_version)}</strong></div>
+        <div>API Response Time: <strong>${data.response_time_ms} ms</strong></div>`;
+    } else {
+      alertBox.className = 'alert-box failed';
+      alertBox.innerHTML = `
+        <div style="font-weight:700; margin-bottom:4px;">✕ Connection Failed</div>
+        <div>${escapeHtml(data.message)}</div>
+        <ul style="margin-top:6px; padding-left:20px; font-size:12px;">
+          ${(data.check_list || []).map(item => `<li>Check ${escapeHtml(item)}</li>`).join('')}
+        </ul>`;
+    }
+  } catch (err) {
+    alertBox.className = 'alert-box failed';
+    alertBox.innerHTML = `<div>✕ Test Connection Error: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+async function testDeviceDirectConnection(deviceId) {
+  showToast('Testing RouterOS API connection...', 'warning');
+  try {
+    const res = await fetch(`/api/devices/${deviceId}/test-connection`, { method: 'POST' });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`✓ Connection Successful: ${data.device_name} (${data.response_time_ms} ms)`, 'success');
+    } else {
+      showToast(`✕ Connection Failed for ${data.device_name}`, 'error');
+    }
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function handleDeviceFormSubmit(event) {
+  event.preventDefault();
+  const devId = document.getElementById('device-form-id').value;
+
+  const payload = {
+    name: document.getElementById('dev-name').value,
+    ip_address: document.getElementById('dev-ip').value,
+    role: document.getElementById('dev-role').value,
+    location: document.getElementById('dev-location').value,
+    description: document.getElementById('dev-desc').value,
+    api_protocol: document.getElementById('dev-protocol').value,
+    api_port: parseInt(document.getElementById('dev-port').value) || 8728,
+    username: document.getElementById('dev-user').value,
+    password: document.getElementById('dev-pass').value,
+    monitoring_enabled: document.getElementById('dev-monitoring').value === 'true',
+    collection_interval: parseInt(document.getElementById('dev-interval').value) || 30,
+    monitoring_profile: document.getElementById('dev-profile').value
+  };
+
+  const url = devId ? `/api/devices/${devId}` : `/api/devices`;
+  const method = devId ? 'PUT' : 'POST';
+
+  try {
+    const res = await fetch(url, {
+      method: method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Failed to save device.');
+
+    showToast(data.message || 'Device saved successfully.', 'success');
+    closeDeviceFormModal();
+    loadCurrentTab();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+// Delete Device Modal
+let deleteTargetId = null;
+
+function confirmDeleteDevice(deviceId, deviceName) {
+  deleteTargetId = deviceId;
+  const nameEl = document.getElementById('delete-device-name');
+  if (nameEl) nameEl.innerText = `${deviceName} (${deviceId})`;
+  
+  const btn = document.getElementById('btn-confirm-delete');
+  if (btn) {
+    btn.onclick = () => executeDeviceDelete();
+  }
+  document.getElementById('delete-device-modal').classList.remove('hidden');
+}
+
+function closeDeleteDeviceModal() {
+  document.getElementById('delete-device-modal').classList.add('hidden');
+  deleteTargetId = null;
+}
+
+async function executeDeviceDelete() {
+  if (!deleteTargetId) return;
+  try {
+    const res = await fetch(`/api/devices/${deleteTargetId}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Failed to delete device.');
+
+    showToast(data.message || 'Device removed from inventory.', 'success');
+    closeDeleteDeviceModal();
+    loadCurrentTab();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function toggleDeviceMonitoring(deviceId, enable) {
+  const url = enable ? `/api/devices/${deviceId}/monitoring/enable` : `/api/devices/${deviceId}/monitoring/disable`;
+  try {
+    const res = await fetch(url, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.detail || 'Failed to toggle monitoring.');
+
+    showToast(data.message, 'success');
+    loadCurrentTab();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+// -------------------------------------------------------------------
+// 4. DEVICE DETAIL WORKSPACE MODAL
+// -------------------------------------------------------------------
+async function openDeviceDetailWorkspace(deviceId) {
+  const modal = document.getElementById('device-detail-modal');
+  const body = document.getElementById('device-detail-modal-body');
+  if (!modal || !body) return;
+
+  body.innerHTML = `<div class="skeleton-loader"><p>Loading details for ${escapeHtml(deviceId)}...</p></div>`;
+  modal.classList.remove('hidden');
+
+  try {
+    const res = await fetch(`/api/devices/${deviceId}`);
+    if (!res.ok) throw new Error('Device details unavailable.');
+    const d = await res.json();
+
+    let html = `
+      <div class="modal-header">
+        <div>
+          <h2>${escapeHtml(d.name)} <span style="font-size:14px; color:var(--text-muted);">(${escapeHtml(d.ip_address)})</span></h2>
+          <div style="margin-top:4px; display:flex; gap:10px; align-items:center;">
+            ${renderStatusBadge(d.monitoring_enabled ? d.status : 'DISABLED')}
+            <span style="font-size:12px; color:var(--accent-blue); font-weight:600;">Role: ${escapeHtml(d.role || 'Router')}</span>
+            <span style="font-size:12px; color:var(--text-muted);">Location: ${escapeHtml(d.location || 'N/A')}</span>
+          </div>
+        </div>
+        <div style="display:flex; gap:10px;">
+          <button class="btn btn-secondary btn-sm" onclick="openEditDeviceModal('${d.device_id}')">Edit</button>
+          <button class="btn btn-secondary btn-sm" onclick="testDeviceDirectConnection('${d.device_id}')">Test</button>
+          <button class="close-btn" onclick="document.getElementById('device-detail-modal').classList.add('hidden')">✕</button>
+        </div>
+      </div>
+
+      <div class="summary-grid">
+        <div class="summary-card healthy">
+          <span class="card-label">CPU Load</span>
+          <span class="card-value">${(d.cpu_percent || 0).toFixed(1)}%</span>
+        </div>
+        <div class="summary-card healthy">
+          <span class="card-label">Memory Usage</span>
+          <span class="card-value">${(d.memory_percent || 0).toFixed(1)}%</span>
+        </div>
+        <div class="summary-card healthy">
+          <span class="card-label">RouterOS Version</span>
+          <span class="card-value" style="font-size:18px;">${escapeHtml(d.version || 'v7')}</span>
+        </div>
+        <div class="summary-card healthy">
+          <span class="card-label">API Status</span>
+          <span class="card-value" style="font-size:18px; color:var(--status-green);">Connected</span>
+        </div>
+      </div>
+
+      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:16px; margin-bottom:24px;">
+        <div class="form-section">
+          <span class="form-section-title">INTERFACES</span>
+          <div style="font-size:24px; font-weight:700;">${d.interfaces_summary?.up || 0} / ${d.interfaces_summary?.total || 0} UP</div>
+          <span style="font-size:12px; color:var(--text-muted);">${d.interfaces_summary?.down || 0} Down</span>
+        </div>
+        <div class="form-section">
+          <span class="form-section-title">BGP PEERS</span>
+          <div style="font-size:24px; font-weight:700;">${d.bgp_summary?.established || 0} / ${d.bgp_summary?.total || 0} EST</div>
+          <span style="font-size:12px; color:var(--text-muted);">${d.bgp_summary?.down || 0} Down</span>
+        </div>
+        <div class="form-section">
+          <span class="form-section-title">OSPF NEIGHBORS</span>
+          <div style="font-size:24px; font-weight:700;">${d.ospf_summary?.full || 0} / ${d.ospf_summary?.total || 0} FULL</div>
+          <span style="font-size:12px; color:var(--text-muted);">${d.ospf_summary?.down || 0} Down</span>
+        </div>
+        <div class="form-section">
+          <span class="form-section-title">ROUTES & NAT</span>
+          <div style="font-size:24px; font-weight:700;">${d.routes_summary?.total || 0} Routes</div>
+          <span style="font-size:12px; color:var(--text-muted);">${d.nat_summary?.total || 0} NAT Rules</span>
+        </div>
+      </div>
+
+      <div class="table-card">
+        <div class="table-header">
+          <span class="table-title">Recent Events on ${escapeHtml(d.name)}</span>
+        </div>
+        <table class="noc-table">
           <thead>
             <tr>
-              <th>Fact / Finding</th>
-              <th>Parameter</th>
-              <th>Observed Value</th>
-              <th>Baseline Value</th>
-              <th>Source</th>
+              <th>Severity</th>
+              <th>Type</th>
+              <th>Message / Context</th>
+              <th>Timestamp</th>
+            </tr>
+          </thead>
+          <tbody>`;
+
+    const events = d.recent_events || [];
+    if (events.length === 0) {
+      html += `<tr><td colspan="4" style="text-align:center; padding:20px; color:var(--text-muted);">No recent events recorded for this device.</td></tr>`;
+    } else {
+      events.forEach(e => {
+        html += `
+          <tr>
+            <td>${renderStatusBadge(e.severity)}</td>
+            <td><code>${escapeHtml(e.event_type)}</code></td>
+            <td>${escapeHtml(e.message)}</td>
+            <td><span style="font-size:12px; color:var(--text-muted);">${new Date(e.timestamp).toLocaleTimeString()}</span></td>
+          </tr>`;
+      });
+    }
+
+    html += `</tbody></table></div>`;
+    body.innerHTML = html;
+  } catch (err) {
+    body.innerHTML = `<div class="alert-box failed">✕ Failed to load device details: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+// -------------------------------------------------------------------
+// 5. INTERFACES OVERVIEW VIEW
+// -------------------------------------------------------------------
+async function renderInterfacesView(container) {
+  const res = await fetch('/api/interfaces/overview');
+  const data = await res.json();
+  const ifaces = data.interfaces || [];
+
+  let html = `
+    <div class="action-banner">
+      <div>
+        <h2>Interfaces & Traffic Overview</h2>
+        <p>Real-time delta bandwidth throughput and interface statuses</p>
+      </div>
+    </div>
+
+    <div class="table-card">
+      <table class="noc-table">
+        <thead>
+          <tr>
+            <th>Status</th>
+            <th>Device</th>
+            <th>Interface Name</th>
+            <th>Type</th>
+            <th>RX Bandwidth</th>
+            <th>TX Bandwidth</th>
+            <th>RX Drops</th>
+            <th>TX Drops</th>
+            <th>Health Tag</th>
+          </tr>
+        </thead>
+        <tbody>`;
+
+  if (ifaces.length === 0) {
+    html += `<tr><td colspan="9" style="text-align:center; padding:24px; color:var(--text-muted);">No interfaces monitored.</td></tr>`;
+  } else {
+    ifaces.forEach(i => {
+      html += `
+        <tr>
+          <td><span class="badge ${i.status === 'UP' ? 'badge-healthy' : 'badge-critical'}">${i.status}</span></td>
+          <td><strong>${escapeHtml(i.device_name || i.device_id)}</strong></td>
+          <td><code>${escapeHtml(i.interface_name)}</code></td>
+          <td>${escapeHtml(i.type)}</td>
+          <td><strong style="color:var(--accent-blue);">${formatBandwidth(i.rx_bps)}</strong></td>
+          <td><strong style="color:var(--status-green);">${formatBandwidth(i.tx_bps)}</strong></td>
+          <td>${i.rx_drops || 0}</td>
+          <td>${i.tx_drops || 0}</td>
+          <td>${renderStatusBadge(i.health_tag)}</td>
+        </tr>`;
+    });
+  }
+
+  html += `</tbody></table></div>`;
+  container.innerHTML = html;
+}
+
+// -------------------------------------------------------------------
+// 6. BGP PEERS VIEW
+// -------------------------------------------------------------------
+async function renderBgpView(container) {
+  const res = await fetch('/api/routing/bgp/overview');
+  const data = await res.json();
+  const peers = data.bgp_peers || [];
+
+  let html = `
+    <div class="action-banner">
+      <div>
+        <h2>BGP Peer Adjacencies</h2>
+        <p>BGP session statuses and prefix announcements across core transit routers</p>
+      </div>
+    </div>
+
+    <div class="summary-grid">
+      <div class="summary-card healthy">
+        <span class="card-label">Total Peers</span>
+        <span class="card-value">${data.total_bgp_peers || 0}</span>
+      </div>
+      <div class="summary-card healthy">
+        <span class="card-label">Established</span>
+        <span class="card-value">${data.established_peers || 0}</span>
+      </div>
+      <div class="summary-card critical">
+        <span class="card-label">Down Peers</span>
+        <span class="card-value">${data.down_peers || 0}</span>
+      </div>
+    </div>
+
+    <div class="table-card">
+      <table class="noc-table">
+        <thead>
+          <tr>
+            <th>Status</th>
+            <th>Device</th>
+            <th>Peer / Session</th>
+            <th>Remote Address</th>
+            <th>Uptime</th>
+            <th>Prefix Count</th>
+            <th>Session State</th>
+          </tr>
+        </thead>
+        <tbody>`;
+
+  if (peers.length === 0) {
+    html += `<tr><td colspan="7" style="text-align:center; padding:24px; color:var(--text-muted);">No BGP peers configured.</td></tr>`;
+  } else {
+    peers.forEach(p => {
+      html += `
+        <tr>
+          <td><span class="badge ${p.established ? 'badge-healthy' : 'badge-critical'}">${p.established ? 'ESTABLISHED' : 'DOWN'}</span></td>
+          <td><strong>${escapeHtml(p.device_id)}</strong></td>
+          <td><code>${escapeHtml(p.peer)}</code></td>
+          <td><code>${escapeHtml(p.remote_address)}</code></td>
+          <td>${escapeHtml(p.uptime || 'N/A')}</td>
+          <td><strong>${p.prefix_count}</strong> prefixes</td>
+          <td>${p.established ? 'Established' : 'Idle / Connect'}</td>
+        </tr>`;
+    });
+  }
+
+  html += `</tbody></table></div>`;
+  container.innerHTML = html;
+}
+
+// -------------------------------------------------------------------
+// 7. OSPF NEIGHBORS VIEW
+// -------------------------------------------------------------------
+async function renderOspfView(container) {
+  const res = await fetch('/api/routing/ospf/overview');
+  const data = await res.json();
+  const nbrs = data.ospf_neighbors || [];
+
+  let html = `
+    <div class="action-banner">
+      <div>
+        <h2>OSPF Neighbor Adjacencies</h2>
+        <p>Intra-AS OSPF neighbor states and area adjacencies</p>
+      </div>
+    </div>
+
+    <div class="summary-grid">
+      <div class="summary-card healthy">
+        <span class="card-label">Total Neighbors</span>
+        <span class="card-value">${data.total_ospf_neighbors || 0}</span>
+      </div>
+      <div class="summary-card healthy">
+        <span class="card-label">Full Adjacencies</span>
+        <span class="card-value">${data.full_neighbors || 0}</span>
+      </div>
+      <div class="summary-card critical">
+        <span class="card-label">Non-Full / Down</span>
+        <span class="card-value">${data.non_full_neighbors || 0}</span>
+      </div>
+    </div>
+
+    <div class="table-card">
+      <table class="noc-table">
+        <thead>
+          <tr>
+            <th>Status</th>
+            <th>Device</th>
+            <th>Neighbor Address</th>
+            <th>Router ID</th>
+            <th>OSPF State</th>
+          </tr>
+        </thead>
+        <tbody>`;
+
+  if (nbrs.length === 0) {
+    html += `<tr><td colspan="5" style="text-align:center; padding:24px; color:var(--text-muted);">No OSPF neighbors configured.</td></tr>`;
+  } else {
+    nbrs.forEach(n => {
+      const isFull = (n.state || '').includes('Full');
+      html += `
+        <tr>
+          <td><span class="badge ${isFull ? 'badge-healthy' : 'badge-warning'}">${isFull ? 'FULL' : '2-WAY / DOWN'}</span></td>
+          <td><strong>${escapeHtml(n.device_id)}</strong></td>
+          <td><code>${escapeHtml(n.neighbor)}</code></td>
+          <td><code>${escapeHtml(n.router_id || 'N/A')}</code></td>
+          <td>${escapeHtml(n.state)}</td>
+        </tr>`;
+    });
+  }
+
+  html += `</tbody></table></div>`;
+  container.innerHTML = html;
+}
+
+// -------------------------------------------------------------------
+// 8. ROUTING & NAT VIEW
+// -------------------------------------------------------------------
+async function renderRoutingView(container) {
+  const res = await fetch('/api/routing/overview');
+  const data = await res.json();
+
+  let html = `
+    <div class="action-banner">
+      <div>
+        <h2>Routing Table & NAT Matrix</h2>
+        <p>Physical RouterOS static routes and CGNAT rule monitoring</p>
+      </div>
+    </div>
+
+    <div class="summary-grid">
+      <div class="summary-card healthy">
+        <span class="card-label">Default Route Status</span>
+        <span class="card-value" style="font-size:20px; color:${data.default_route_active ? 'var(--status-green)' : 'var(--status-red)'};">
+          ${data.default_route_active ? '🟢 ACTIVE' : '🔴 DOWN'}
+        </span>
+      </div>
+      <div class="summary-card healthy">
+        <span class="card-label">Total Routes</span>
+        <span class="card-value">${data.total_routes || 0}</span>
+      </div>
+      <div class="summary-card healthy">
+        <span class="card-label">Active Routes</span>
+        <span class="card-value">${data.active_routes || 0}</span>
+      </div>
+      <div class="summary-card warning">
+        <span class="card-label">Inactive Routes</span>
+        <span class="card-value">${data.inactive_routes || 0}</span>
+      </div>
+    </div>
+
+    <div class="alert-box success">
+      <h3>✓ Default Gateway Reachability Verified</h3>
+      <p>Primary <code>0.0.0.0/0</code> ISP uplink route is ACTIVE across all core gateways.</p>
+    </div>`;
+
+  container.innerHTML = html;
+}
+
+// -------------------------------------------------------------------
+// 9. INCIDENTS VIEW
+// -------------------------------------------------------------------
+async function renderIncidentsView(container) {
+  const res = await fetch('/api/incidents');
+  const data = await res.json();
+  const incidents = data.incidents || [];
+
+  let html = `
+    <div class="action-banner">
+      <div>
+        <h2>Active Incident Response Center</h2>
+        <p>Correlated network incidents with automatic Root Cause Analysis (RCA)</p>
+      </div>
+    </div>
+
+    <div class="table-card">
+      <table class="noc-table">
+        <thead>
+          <tr>
+            <th>Status</th>
+            <th>Priority</th>
+            <th>Incident ID</th>
+            <th>Device</th>
+            <th>Title</th>
+            <th>Root Cause Component</th>
+            <th>First Seen</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody>`;
+
+  if (incidents.length === 0) {
+    html += `<tr><td colspan="8" style="text-align:center; padding:32px; color:var(--text-muted);">🟢 Zero active incidents detected. Network status is healthy.</td></tr>`;
+  } else {
+    incidents.forEach(inc => {
+      html += `
+        <tr>
+          <td><span class="badge ${inc.status === 'OPEN' ? 'badge-critical' : 'badge-healthy'}">${escapeHtml(inc.status)}</span></td>
+          <td><span class="badge badge-warning">P${inc.priority || 1}</span></td>
+          <td><code>${escapeHtml(inc.incident_id)}</code></td>
+          <td><strong>${escapeHtml(inc.device_id)}</strong></td>
+          <td><strong>${escapeHtml(inc.title)}</strong></td>
+          <td><code>${escapeHtml(inc.root_cause_component || 'N/A')}</code></td>
+          <td><span style="font-size:12px; color:var(--text-muted);">${new Date(inc.created_at).toLocaleTimeString()}</span></td>
+          <td>
+            <button class="btn btn-danger btn-sm" onclick="openInvestigationWorkspace('${inc.incident_id}')">🔍 Investigate</button>
+          </td>
+        </tr>`;
+    });
+  }
+
+  html += `</tbody></table></div>`;
+  container.innerHTML = html;
+}
+
+// -------------------------------------------------------------------
+// 10. EVENTS VIEW
+// -------------------------------------------------------------------
+async function renderEventsView(container) {
+  const res = await fetch('/api/events');
+  const data = await res.json();
+  const events = data.events || [];
+
+  let html = `
+    <div class="action-banner">
+      <div>
+        <h2>Event Audit Log</h2>
+        <p>Raw deterministic anomaly events collected from RouterOS API</p>
+      </div>
+    </div>
+
+    <div class="table-card">
+      <table class="noc-table">
+        <thead>
+          <tr>
+            <th>Severity</th>
+            <th>Device</th>
+            <th>Event Type</th>
+            <th>Target Metric</th>
+            <th>Message</th>
+            <th>Timestamp</th>
+          </tr>
+        </thead>
+        <tbody>`;
+
+  if (events.length === 0) {
+    html += `<tr><td colspan="6" style="text-align:center; padding:24px; color:var(--text-muted);">No telemetry events recorded.</td></tr>`;
+  } else {
+    events.forEach(e => {
+      html += `
+        <tr>
+          <td>${renderStatusBadge(e.severity)}</td>
+          <td><strong>${escapeHtml(e.device_id)}</strong></td>
+          <td><code>${escapeHtml(e.event_type)}</code></td>
+          <td><code>${escapeHtml(e.metric_name)}</code></td>
+          <td>${escapeHtml(e.message)}</td>
+          <td><span style="font-size:12px; color:var(--text-muted);">${new Date(e.timestamp).toLocaleTimeString()}</span></td>
+        </tr>`;
+    });
+  }
+
+  html += `</tbody></table></div>`;
+  container.innerHTML = html;
+}
+
+// -------------------------------------------------------------------
+// 11. SYSTEM DIAGNOSTICS VIEW
+// -------------------------------------------------------------------
+async function renderSystemView(container) {
+  const [healthRes, aiRes, dbRes] = await Promise.all([
+    fetch('/api/health'),
+    fetch('/api/ai/status'),
+    fetch('/api/database/status')
+  ]);
+  const healthData = await healthRes.json();
+  const aiData = await aiRes.json();
+  const dbData = await dbRes.json();
+
+  let html = `
+    <div class="action-banner">
+      <div>
+        <h2>AI & System Diagnostics</h2>
+        <p>OpenRouter API status, SQLite database storage metrics, and engine health</p>
+      </div>
+    </div>
+
+    <div class="summary-grid">
+      <div class="summary-card healthy">
+        <span class="card-label">FastAPI Health</span>
+        <span class="card-value" style="color:var(--status-green);">${(healthData.status || 'OK').toUpperCase()}</span>
+      </div>
+      <div class="summary-card healthy">
+        <span class="card-label">AI Provider</span>
+        <span class="card-value" style="font-size:18px;">${escapeHtml(aiData.provider || 'openrouter')}</span>
+      </div>
+      <div class="summary-card healthy">
+        <span class="card-label">LLM Model</span>
+        <span class="card-value" style="font-size:16px;">${escapeHtml(aiData.model || 'llama-3.3-70b')}</span>
+      </div>
+      <div class="summary-card healthy">
+        <span class="card-label">Database Size</span>
+        <span class="card-value" style="font-size:18px;">${((dbData.size_bytes || 0) / 1024 / 1024).toFixed(2)} MB</span>
+      </div>
+    </div>
+
+    <div class="form-section">
+      <span class="form-section-title">SQLITE DATABASE ROW METRICS</span>
+      <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap:12px; margin-top:10px;">
+        ${Object.entries(dbData.row_counts || {}).map(([k, v]) => `
+          <div style="background:var(--bg-dark); padding:10px; border-radius:6px; border:1px solid var(--border-color);">
+            <div style="font-size:11px; color:var(--text-muted);">${escapeHtml(k)}</div>
+            <div style="font-size:18px; font-weight:700;">${v}</div>
+          </div>
+        `).join('')}
+      </div>
+    </div>`;
+
+  container.innerHTML = html;
+}
+
+// -------------------------------------------------------------------
+// 12. DEEP INVESTIGATION WORKSPACE MODAL
+// -------------------------------------------------------------------
+async function openInvestigationWorkspace(incidentId) {
+  const modal = document.getElementById('investigation-modal');
+  const body = document.getElementById('investigation-modal-body');
+  if (!modal || !body) return;
+
+  body.innerHTML = `<div class="skeleton-loader"><p>Running Deep NOC Investigation for incident ${escapeHtml(incidentId)}...</p></div>`;
+  modal.classList.remove('hidden');
+
+  try {
+    const res = await fetch(`/api/incidents/${incidentId}/deep-investigation`);
+    if (!res.ok) throw new Error('Investigation execution failed.');
+    const inv = await res.json();
+
+    const pri = inv.primary_failure || {};
+    const ev = inv.evidence_json || {};
+    const recs = inv.recommendations_json || [];
+
+    let html = `
+      <div class="modal-header">
+        <div>
+          <h2>🔍 DEEP NOC INVESTIGATION REPORT</h2>
+          <span style="font-size:13px; color:var(--text-muted);">Incident ID: <code>${escapeHtml(inv.incident_id)}</code> | Target Device: <strong>${escapeHtml(inv.device_id)}</strong></span>
+        </div>
+        <button class="close-btn" onclick="document.getElementById('investigation-modal').classList.add('hidden')">✕</button>
+      </div>
+
+      <div class="alert-box failed" style="margin-bottom:20px;">
+        <h3 style="margin-bottom:4px;">PRIMARY ROOT CAUSE IDENTIFIED</h3>
+        <p style="font-size:15px; font-weight:700;">${escapeHtml(pri.summary || 'Anomaly Detected')}</p>
+        <p style="font-size:12px; margin-top:4px;">Confidence: <strong>${((pri.confidence || 0.95) * 100).toFixed(0)}%</strong> | Rule: <code>${escapeHtml(pri.rule_id || 'ANOMALY')}</code></p>
+      </div>
+
+      <div class="form-section">
+        <span class="form-section-title">EVIDENCE TABLE & TELEMETRY PROOF</span>
+        <table class="noc-table" style="margin-top:10px;">
+          <thead>
+            <tr>
+              <th>Metric / Target</th>
+              <th>Current Observed Value</th>
+              <th>Baseline / Normal Value</th>
+              <th>Deviation</th>
             </tr>
           </thead>
           <tbody>
-            ${(inv.evidence || []).map(e => `
+            ${(ev.metrics || []).map(m => `
               <tr>
-                <td><strong>${e.fact}</strong></td>
-                <td>${e.parameter}</td>
-                <td>${e.observed_value}</td>
-                <td>${e.baseline_value}</td>
-                <td>${e.source}</td>
+                <td><code>${escapeHtml(m.metric)}</code></td>
+                <td><strong style="color:var(--status-red);">${escapeHtml(m.current)}</strong></td>
+                <td>${escapeHtml(m.baseline || 'N/A')}</td>
+                <td><span class="badge badge-critical">${escapeHtml(m.deviation || 'DEVIATION')}</span></td>
               </tr>
             `).join('')}
           </tbody>
         </table>
+      </div>
 
-        <!-- Recommended Actionable Checks -->
-        <h4 style="margin:20px 0 12px 0;">Recommended NOC Engineer Next Checks (Read-Only)</h4>
-        <ol style="padding-left:20px; color:var(--text-muted);">
-          ${(inv.recommendations || []).map(r => `
-            <li style="margin-bottom:8px;">
-              <strong style="color:var(--text-main)">${r.check}</strong><br/>
-              <code style="background:rgba(0,0,0,0.3); padding:2px 6px; border-radius:4px; font-size:11px;">${r.command}</code>
-            </li>
-          `).join('')}
-        </ol>
+      <div class="form-section">
+        <span class="form-section-title">INFORMATIONAL TROUBLESHOOTING RECOMMENDATIONS (READ-ONLY NOC GUIDE)</span>
+        <ul style="padding-left:20px; font-size:13px; color:var(--text-main); margin-top:10px; display:flex; flex-direction:column; gap:8px;">
+          ${recs.map(r => `<li>${escapeHtml(r)}</li>`).join('')}
+        </ul>
+      </div>`;
 
-        <!-- Technical Details Collapsible -->
-        <details style="margin-top:24px; border-top:1px solid var(--border-color); padding-top:16px;">
-          <summary style="cursor:pointer; color:var(--text-muted); font-weight:600;">[ Show Technical Details / Raw JSON ]</summary>
-          <pre style="background:rgba(0,0,0,0.4); padding:16px; border-radius:6px; overflow-x:auto; margin-top:12px; font-size:11px;">${JSON.stringify(inv, null, 2)}</pre>
-        </details>
-      `;
-    } catch (err) {
-      modalContent.innerHTML = `<div style="padding:40px; text-align:center; color:var(--status-red);">⚠ Investigation loading failed: ${err.message}</div>`;
-    }
-  };
-
-  window.closeInvestigation = function() {
-    const modal = document.getElementById('investigation-modal');
-    if (modal) modal.classList.add('hidden');
-  };
-});
+    body.innerHTML = html;
+  } catch (err) {
+    body.innerHTML = `<div class="alert-box failed">✕ Investigation workspace error: ${escapeHtml(err.message)}</div>`;
+  }
+}

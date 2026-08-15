@@ -59,6 +59,15 @@ def collect_device_telemetry(host: str) -> Dict[str, Any]:
     Each metric domain fails independently so one domain error will not discard other metrics.
     """
     device_id = host
+    dev_info = db.get_device_by_id(host, redact_password=False)
+    if dev_info:
+        if dev_info.get("is_deleted") == 1:
+            logger.info(f"Skipping telemetry collection for deleted device {host}.")
+            return {"status": "DELETED", "device_id": host}
+        if dev_info.get("monitoring_enabled") == 0:
+            logger.info(f"Skipping telemetry collection for monitoring-disabled device {host}.")
+            return {"status": "DISABLED", "device_id": host}
+
     logger.info(f"Collecting AIOps telemetry for device {device_id}...")
 
     stats = {

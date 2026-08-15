@@ -48,12 +48,45 @@ class DatabaseManager:
                     device_id TEXT PRIMARY KEY,
                     name TEXT,
                     ip_address TEXT,
+                    description TEXT DEFAULT '',
+                    location TEXT DEFAULT '',
+                    role TEXT DEFAULT 'Router',
+                    api_protocol TEXT DEFAULT 'api',
+                    api_port INTEGER DEFAULT 8728,
+                    username TEXT DEFAULT 'admin',
+                    password TEXT DEFAULT '',
+                    monitoring_enabled INTEGER DEFAULT 1,
+                    collection_interval INTEGER DEFAULT 30,
+                    monitoring_profile TEXT DEFAULT 'Standard',
                     model TEXT,
                     version TEXT,
-                    status TEXT,
+                    status TEXT DEFAULT 'HEALTHY',
+                    last_seen TEXT,
+                    is_deleted INTEGER DEFAULT 0,
                     updated_at TEXT
                 )
             """)
+
+            # Auto-migrate devices table columns if missing
+            device_cols = [
+                ("description", "TEXT DEFAULT ''"),
+                ("location", "TEXT DEFAULT ''"),
+                ("role", "TEXT DEFAULT 'Router'"),
+                ("api_protocol", "TEXT DEFAULT 'api'"),
+                ("api_port", "INTEGER DEFAULT 8728"),
+                ("username", "TEXT DEFAULT 'admin'"),
+                ("password", "TEXT DEFAULT ''"),
+                ("monitoring_enabled", "INTEGER DEFAULT 1"),
+                ("collection_interval", "INTEGER DEFAULT 30"),
+                ("monitoring_profile", "TEXT DEFAULT 'Standard'"),
+                ("last_seen", "TEXT"),
+                ("is_deleted", "INTEGER DEFAULT 0"),
+            ]
+            for col_name, col_type in device_cols:
+                try:
+                    cursor.execute(f"ALTER TABLE devices ADD COLUMN {col_name} {col_type}")
+                except Exception:
+                    pass
 
             # 2. Device Metrics
             cursor.execute("""
@@ -281,16 +314,39 @@ class DatabaseManager:
     def upsert_device(self, record: DeviceRecord) -> None:
         with self.get_connection() as conn:
             conn.execute("""
-                INSERT INTO devices (device_id, name, ip_address, model, version, status, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO devices (
+                    device_id, name, ip_address, description, location, role,
+                    api_protocol, api_port, username, password, monitoring_enabled,
+                    collection_interval, monitoring_profile, model, version, status,
+                    last_seen, is_deleted, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(device_id) DO UPDATE SET
                     name=excluded.name,
                     ip_address=excluded.ip_address,
-                    model=excluded.model,
-                    version=excluded.version,
+                    description=excluded.description,
+                    location=excluded.location,
+                    role=excluded.role,
+                    api_protocol=excluded.api_protocol,
+                    api_port=excluded.api_port,
+                    username=excluded.username,
+                    password=CASE WHEN excluded.password != '' AND excluded.password != '[REDACTED]' THEN excluded.password ELSE devices.password END,
+                    monitoring_enabled=excluded.monitoring_enabled,
+                    collection_interval=excluded.collection_interval,
+                    monitoring_profile=excluded.monitoring_profile,
+                    model=COALESCE(excluded.model, devices.model),
+                    version=COALESCE(excluded.version, devices.version),
                     status=excluded.status,
+                    last_seen=COALESCE(excluded.last_seen, devices.last_seen),
+                    is_deleted=excluded.is_deleted,
                     updated_at=excluded.updated_at
-            """, (record.device_id, record.name, record.ip_address, record.model, record.version, record.status, record.updated_at))
+            """, (
+                record.device_id, record.name, record.ip_address, record.description or "", record.location or "",
+                record.role or "Router", record.api_protocol or "api", record.api_port or 8728, record.username or "admin",
+                record.password or "", int(record.monitoring_enabled), record.collection_interval or 30,
+                record.monitoring_profile or "Standard", record.model, record.version, record.status or "HEALTHY",
+                record.last_seen, int(record.is_deleted), record.updated_at
+            ))
             conn.commit()
 
     def insert_device_metric(self, m: DeviceMetricRecord) -> None:
@@ -435,10 +491,51 @@ class DatabaseManager:
             "row_counts": row_counts
         }
 
-    def get_devices(self) -> List[Dict[str, Any]]:
+    def get_devices(self, include_deleted: bool = False, redact_password: bool = True) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
-            rows = conn.execute("SELECT * FROM devices ORDER BY device_id").fetchall()
-            return [dict(r) for r in rows]
+            if include_deleted:
+                rows = conn.execute("SELECT * FROM devices ORDER BY name, device_id").fetchall()
+            else:
+                rows = conn.execute("SELECT * FROM devices WHERE is_deleted = 0 OR is_deleted IS NULL ORDER BY name, device_id").fetchall()
+            res = []
+            for r in rows:
+                d = dict(r)
+                if redact_password:
+                    d["password"] = "[REDACTED]" if d.get("password") else ""
+                res.append(d)
+            return res
+
+    def get_device_by_id(self, device_id: str, redact_password: bool = True) -> Optional[Dict[str, Any]]:
+        with self.get_connection() as conn:
+            row = conn.execute("SELECT * FROM devices WHERE device_id = ? OR ip_address = ?", (device_id, device_id)).fetchone()
+            if not row:
+                return None
+            d = dict(row)
+            if redact_password:
+                d["password"] = "[REDACTED]" if d.get("password") else ""
+            return d
+
+    def soft_delete_device(self, device_id: str) -> bool:
+        """Removes device from active inventory without deleting historical telemetry."""
+        from datetime import datetime, timezone
+        with self.get_connection() as conn:
+            cur = conn.execute("""
+                UPDATE devices SET is_deleted = 1, monitoring_enabled = 0, status = 'DISABLED', updated_at = ?
+                WHERE device_id = ? OR ip_address = ?
+            """, (datetime.now(timezone.utc).isoformat(), device_id, device_id))
+            conn.commit()
+            return cur.rowcount > 0
+
+    def set_device_monitoring(self, device_id: str, enabled: bool) -> bool:
+        """Enables or disables monitoring for a device."""
+        from datetime import datetime, timezone
+        with self.get_connection() as conn:
+            cur = conn.execute("""
+                UPDATE devices SET monitoring_enabled = ?, status = CASE WHEN ? = 0 THEN 'DISABLED' ELSE 'HEALTHY' END, updated_at = ?
+                WHERE device_id = ? OR ip_address = ?
+            """, (int(enabled), int(enabled), datetime.now(timezone.utc).isoformat(), device_id, device_id))
+            conn.commit()
+            return cur.rowcount > 0
 
     def get_recent_device_metrics(self, device_id: str, limit: int = 100, lookback_minutes: Optional[int] = None) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:

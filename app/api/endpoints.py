@@ -287,9 +287,55 @@ def get_analysis_by_id_endpoint(analysis_id: str):
     return analysis
 
 
-# --- PHASE 6 NOC DASHBOARD OVERVIEW & DEEP INVESTIGATION ENDPOINTS ---
+# --- PHASE 6 DEVICE MANAGEMENT REST ENDPOINTS ---
 
-from app.engine.investigator import DeepNocInvestigator
+import ipaddress
+from app.db.schemas import DeviceRecord
+from app.tools.routeros import get_routeros_client, parse_system_resource
+
+
+def validate_device_input(data: Dict[str, Any], is_update: bool = False, existing_id: Optional[str] = None):
+    name = str(data.get("name", "")).strip()
+    ip_addr = str(data.get("ip_address", "")).strip()
+    port = data.get("api_port", 8728)
+
+    if not is_update or "name" in data:
+        if not name:
+            raise HTTPException(status_code=400, detail="Device name is required.")
+
+    if not is_update or "ip_address" in data:
+        if not ip_addr:
+            raise HTTPException(status_code=400, detail="Management IP address is required.")
+        try:
+            ipaddress.ip_address(ip_addr)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Management IP '{ip_addr}' is invalid.")
+
+    if port is not None:
+        try:
+            port_num = int(port)
+            if port_num < 1 or port_num > 65535:
+                raise ValueError()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="API port must be an integer between 1 and 65535.")
+
+    # Check for name/IP uniqueness
+    existing_devices = db.get_devices(include_deleted=False, redact_password=False)
+    for dev in existing_devices:
+        dev_id = dev["device_id"]
+        if is_update and existing_id and (dev_id == existing_id or dev["ip_address"] == existing_id):
+            continue
+        if name and dev.get("name", "").lower() == name.lower() and dev_id != existing_id:
+            raise HTTPException(status_code=400, detail=f"Device name '{name}' already exists.")
+        if ip_addr and dev.get("ip_address") == ip_addr and dev_id != existing_id:
+            raise HTTPException(status_code=400, detail=f"Device IP address '{ip_addr}' already exists.")
+
+
+@router.get("/devices", status_code=status.HTTP_200_OK)
+def get_devices_list(include_deleted: bool = Query(default=False)):
+    """Retrieves list of all monitored MikroTik devices in inventory. Credentials redacted."""
+    devices = db.get_devices(include_deleted=include_deleted, redact_password=True)
+    return {"devices": devices, "count": len(devices)}
 
 
 @router.get("/devices/overview", status_code=status.HTTP_200_OK)
@@ -339,6 +385,228 @@ def get_devices_overview():
             "health": dev_health
         })
     return {"devices": overview_list, "count": len(overview_list)}
+
+
+@router.get("/devices/{device_id}", status_code=status.HTTP_200_OK)
+def get_device_detail(device_id: str):
+    """Retrieves detailed configuration, health summary, and metrics overview for a single device."""
+    dev = db.get_device_by_id(device_id, redact_password=True)
+    if not dev:
+        raise HTTPException(status_code=404, detail=f"Device '{device_id}' not found.")
+
+    dev_id = dev["device_id"]
+    dm = db.get_recent_device_metrics(dev_id, limit=1)
+    im = db.get_recent_interface_metrics(dev_id, limit=200)
+    bm = db.get_recent_bgp_metrics(dev_id, limit=100)
+    om = db.get_recent_ospf_metrics(dev_id, limit=100)
+    routes_cnt = db.get_device_route_count(dev_id)
+    nat_cnt = db.get_device_nat_count(dev_id)
+    events = db.get_events(device_id=dev_id, limit=10)
+
+    curr_dm = dm[0] if dm else {}
+    up_ifaces = len([i for i in im if i.get("running") == 1])
+    total_ifaces = len(im)
+    est_bgp = len([b for b in bm if b.get("established") == 1])
+    full_ospf = len([o for o in om if "Full" in str(o.get("state"))])
+
+    dev["cpu_percent"] = curr_dm.get("cpu_percent", 0.0)
+    dev["memory_percent"] = curr_dm.get("memory_percent", 0.0)
+    dev["uptime_seconds"] = curr_dm.get("uptime_seconds", 0)
+    dev["interfaces_summary"] = {"up": up_ifaces, "total": total_ifaces, "down": max(0, total_ifaces - up_ifaces)}
+    dev["bgp_summary"] = {"established": est_bgp, "total": len(bm), "down": max(0, len(bm) - est_bgp)}
+    dev["ospf_summary"] = {"full": full_ospf, "total": len(om), "down": max(0, len(om) - full_ospf)}
+    dev["routes_summary"] = {"total": routes_cnt}
+    dev["nat_summary"] = {"total": nat_cnt}
+    dev["recent_events"] = events
+
+    return dev
+
+
+@router.post("/devices", status_code=status.HTTP_201_CREATED)
+def add_device(data: Dict[str, Any]):
+    """Adds a new MikroTik device to the NOC Agent inventory."""
+    validate_device_input(data, is_update=False)
+
+    ip_addr = str(data["ip_address"]).strip()
+    device_id = str(data.get("device_id") or ip_addr).strip()
+    name = str(data.get("name", f"Router-{ip_addr}")).strip()
+
+    rec = DeviceRecord(
+        device_id=device_id,
+        name=name,
+        ip_address=ip_addr,
+        description=str(data.get("description", "")),
+        location=str(data.get("location", "")),
+        role=str(data.get("role", "Router")),
+        api_protocol=str(data.get("api_protocol", "api")),
+        api_port=int(data.get("api_port", 8728)),
+        username=str(data.get("username", "admin")),
+        password=str(data.get("password", "")),
+        monitoring_enabled=bool(data.get("monitoring_enabled", True)),
+        collection_interval=int(data.get("collection_interval", 30)),
+        monitoring_profile=str(data.get("monitoring_profile", "Standard")),
+        status="HEALTHY" if data.get("monitoring_enabled", True) else "DISABLED",
+        is_deleted=False
+    )
+    db.upsert_device(rec)
+    created = db.get_device_by_id(device_id, redact_password=True)
+    return {"message": f"Device '{name}' added successfully.", "device": created}
+
+
+@router.put("/devices/{device_id}", status_code=status.HTTP_200_OK)
+@router.patch("/devices/{device_id}", status_code=status.HTTP_200_OK)
+def update_device_endpoint(device_id: str, data: Dict[str, Any]):
+    """Edits device configuration in NOC inventory. Retains existing password when empty."""
+    existing = db.get_device_by_id(device_id, redact_password=False)
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"Device '{device_id}' not found.")
+
+    validate_device_input(data, is_update=True, existing_id=device_id)
+
+    name = str(data.get("name", existing.get("name"))).strip()
+    ip_addr = str(data.get("ip_address", existing.get("ip_address"))).strip()
+    pwd = data.get("password")
+    final_pwd = existing.get("password") if (pwd is None or pwd == "" or pwd == "[REDACTED]") else str(pwd)
+
+    mon_enabled = bool(data.get("monitoring_enabled", existing.get("monitoring_enabled", True)))
+    curr_status = existing.get("status", "HEALTHY")
+    if not mon_enabled:
+        curr_status = "DISABLED"
+    elif curr_status == "DISABLED":
+        curr_status = "HEALTHY"
+
+    rec = DeviceRecord(
+        device_id=device_id,
+        name=name,
+        ip_address=ip_addr,
+        description=str(data.get("description", existing.get("description", ""))),
+        location=str(data.get("location", existing.get("location", ""))),
+        role=str(data.get("role", existing.get("role", "Router"))),
+        api_protocol=str(data.get("api_protocol", existing.get("api_protocol", "api"))),
+        api_port=int(data.get("api_port", existing.get("api_port", 8728))),
+        username=str(data.get("username", existing.get("username", "admin"))),
+        password=final_pwd,
+        monitoring_enabled=mon_enabled,
+        collection_interval=int(data.get("collection_interval", existing.get("collection_interval", 30))),
+        monitoring_profile=str(data.get("monitoring_profile", existing.get("monitoring_profile", "Standard"))),
+        model=existing.get("model"),
+        version=existing.get("version"),
+        status=curr_status,
+        last_seen=existing.get("last_seen"),
+        is_deleted=bool(existing.get("is_deleted", False))
+    )
+    db.upsert_device(rec)
+    updated = db.get_device_by_id(device_id, redact_password=True)
+    return {"message": f"Device '{name}' updated successfully.", "device": updated}
+
+
+@router.delete("/devices/{device_id}", status_code=status.HTTP_200_OK)
+def delete_device_endpoint(device_id: str):
+    """Soft-deletes device from NOC Agent inventory. Strictly ZERO RouterOS commands sent!"""
+    existing = db.get_device_by_id(device_id, redact_password=True)
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"Device '{device_id}' not found.")
+
+    db.soft_delete_device(device_id)
+    return {"message": f"Device '{existing.get('name')}' removed from NOC inventory.", "device_id": device_id}
+
+
+@router.post("/devices/{device_id}/test-connection", status_code=status.HTTP_200_OK)
+@router.post("/devices/test-connection", status_code=status.HTTP_200_OK)
+def test_device_connection(device_id: Optional[str] = None, data: Optional[Dict[str, Any]] = None):
+    """
+    Performs a read-only RouterOS API connection test.
+    Returns success/failure with latency & version without exposing raw passwords or sensitive tracebacks.
+    """
+    target_host = None
+    target_port = 8728
+    target_user = "admin"
+    target_pwd = ""
+    target_name = "MikroTik Router"
+
+    if data and data.get("ip_address"):
+        target_host = str(data["ip_address"]).strip()
+        target_port = int(data.get("api_port", 8728))
+        target_user = str(data.get("username", "admin")).strip()
+        target_pwd = str(data.get("password", ""))
+        target_name = str(data.get("name", target_host)).strip()
+
+        # If editing and password was left blank, retrieve stored password
+        if (not target_pwd or target_pwd == "[REDACTED]") and device_id:
+            existing = db.get_device_by_id(device_id, redact_password=False)
+            if existing:
+                target_pwd = existing.get("password", "")
+    elif device_id:
+        existing = db.get_device_by_id(device_id, redact_password=False)
+        if not existing:
+            raise HTTPException(status_code=404, detail=f"Device '{device_id}' not found.")
+        target_host = existing.get("ip_address")
+        target_port = int(existing.get("api_port", 8728))
+        target_user = existing.get("username", "admin")
+        target_pwd = existing.get("password", "")
+        target_name = existing.get("name", target_host)
+    else:
+        raise HTTPException(status_code=400, detail="Management IP or device_id is required.")
+
+    if not target_host:
+        raise HTTPException(status_code=400, detail="Invalid management IP.")
+
+    import time
+    start_t = time.time()
+    try:
+        with get_routeros_client(host=target_host, username=target_user, password=target_pwd, port=target_port) as api:
+            res = parse_system_resource(api)
+            latency_ms = int((time.time() - start_t) * 1000)
+            return {
+                "success": True,
+                "status": "SUCCESSFUL",
+                "device_name": target_name,
+                "ip_address": target_host,
+                "routeros_version": res.routeros_version or "RouterOS v7",
+                "api_status": "Connected",
+                "response_time_ms": latency_ms,
+                "message": f"Connection Successful ({latency_ms} ms)"
+            }
+    except Exception as e:
+        latency_ms = int((time.time() - start_t) * 1000)
+        logger.warning(f"Test connection failed for {target_host}: {e}")
+        return {
+            "success": False,
+            "status": "FAILED",
+            "device_name": target_name,
+            "ip_address": target_host,
+            "message": "Unable to connect to RouterOS API",
+            "check_list": [
+                "IP address correctness",
+                "API port accessibility",
+                "Username/password credentials",
+                "Firewall access rules"
+            ]
+        }
+
+
+@router.post("/devices/{device_id}/monitoring/enable", status_code=status.HTTP_200_OK)
+def enable_device_monitoring(device_id: str):
+    """Resumes telemetry collection for a device in NOC Agent inventory."""
+    existing = db.get_device_by_id(device_id, redact_password=True)
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"Device '{device_id}' not found.")
+
+    db.set_device_monitoring(device_id, True)
+    return {"message": f"Monitoring enabled for '{existing.get('name')}'.", "device_id": device_id, "monitoring_enabled": True}
+
+
+@router.post("/devices/{device_id}/monitoring/disable", status_code=status.HTTP_200_OK)
+def disable_device_monitoring(device_id: str):
+    """Pauses telemetry collection for a device in NOC Agent inventory."""
+    existing = db.get_device_by_id(device_id, redact_password=True)
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"Device '{device_id}' not found.")
+
+    db.set_device_monitoring(device_id, False)
+    return {"message": f"Monitoring disabled for '{existing.get('name')}'.", "device_id": device_id, "monitoring_enabled": False}
+
+from app.engine.investigator import DeepNocInvestigator
 
 
 @router.get("/interfaces/overview", status_code=status.HTTP_200_OK)

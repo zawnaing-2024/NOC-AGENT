@@ -3,55 +3,245 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MikroTik NOC Monitoring & AI Investigation Agent</title>
+  <title>ISP MikroTik NOC Agent - Monitoring & AI Investigation Agent</title>
   <link rel="stylesheet" href="/static/css/dashboard.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 </head>
-<body>
-  <!-- Header -->
-  <header>
-    <div class="brand">
-      <span style="font-size: 20px">📡</span>
-      <h1>ISP MikroTik NOC Agent</h1>
-    </div>
-    <div class="header-status">
-      <div class="status-badge" id="live-status">
-        <span class="dot"></span> System Status: HEALTHY
-      </div>
-      <div class="status-badge" id="ai-status">
-        <span class="dot"></span> AI: OpenRouter ● Connected
-      </div>
-      <div class="status-badge">
-        Refresh in: <span id="refresh-counter">10s</span>
-      </div>
-    </div>
-  </header>
+<body class="noc-theme">
 
-  <!-- Navigation Tabs -->
-  <nav class="tabs">
-    <button class="tab-btn active" data-tab="dashboard">📊 Main Dashboard</button>
-    <button class="tab-btn" data-tab="devices">🖥 Devices</button>
-    <button class="tab-btn" data-tab="interfaces">🔌 Interfaces</button>
-    <button class="tab-btn" data-tab="bgp">🌐 BGP</button>
-    <button class="tab-btn" data-tab="ospf">🔄 OSPF</button>
-    <button class="tab-btn" data-tab="routing">🗺 Routing</button>
-    <button class="tab-btn" data-tab="incidents">🚨 Incidents</button>
-  </nav>
+  <!-- Toast Notification Container -->
+  <div id="toast-container" class="toast-container"></div>
 
-  <!-- Main Container -->
-  <main class="container" id="view-container">
-    <!-- Rendered dynamically by dashboard.js -->
-  </main>
+  <div class="layout-wrapper">
+    <!-- Persistent Sidebar Navigation -->
+    <aside class="sidebar" id="sidebar">
+      <div class="sidebar-brand">
+        <span class="brand-icon">📡</span>
+        <div class="brand-text">
+          <h2>NOC AGENT</h2>
+          <span class="brand-sub">ISP Telemetry & AIOps</span>
+        </div>
+      </div>
 
-  <!-- Investigation Workspace Modal -->
-  <div class="modal-backdrop hidden" id="investigation-modal">
-    <div class="modal-content" id="investigation-modal-body">
-      <!-- Rendered dynamically -->
+      <nav class="sidebar-nav">
+        <div class="nav-group">
+          <span class="group-title">OVERVIEW</span>
+          <button class="nav-btn active" data-tab="dashboard">
+            <span class="icon">🏠</span> <span class="label">Dashboard</span>
+          </button>
+        </div>
+
+        <div class="nav-group">
+          <span class="group-title">NETWORK</span>
+          <button class="nav-btn" data-tab="devices">
+            <span class="icon">🖥</span> <span class="label">Devices</span> <span class="badge nav-badge" id="nav-device-count">0</span>
+          </button>
+          <button class="nav-btn" data-tab="interfaces">
+            <span class="icon">🔌</span> <span class="label">Interfaces</span>
+          </button>
+          <button class="nav-btn" data-tab="bgp">
+            <span class="icon">🌐</span> <span class="label">BGP Peers</span>
+          </button>
+          <button class="nav-btn" data-tab="ospf">
+            <span class="icon">🔄</span> <span class="label">OSPF Neighbors</span>
+          </button>
+          <button class="nav-btn" data-tab="routing">
+            <span class="icon">🗺</span> <span class="label">Routing Table</span>
+          </button>
+        </div>
+
+        <div class="nav-group">
+          <span class="group-title">OPERATIONS</span>
+          <button class="nav-btn" data-tab="incidents">
+            <span class="icon">🚨</span> <span class="label">Incidents</span> <span class="badge nav-badge alert" id="nav-incident-count">0</span>
+          </button>
+          <button class="nav-btn" data-tab="events">
+            <span class="icon">⚡</span> <span class="label">Event Log</span>
+          </button>
+        </div>
+
+        <div class="nav-group">
+          <span class="group-title">SYSTEM</span>
+          <button class="nav-btn" data-tab="system">
+            <span class="icon">🤖</span> <span class="label">AI & System</span>
+          </button>
+        </div>
+      </nav>
+
+      <div class="sidebar-footer">
+        <span class="pulse-dot green"></span> Collector Active
+      </div>
+    </aside>
+
+    <!-- Main Application Shell -->
+    <div class="main-wrapper">
+      <!-- Top Navigation Bar -->
+      <header class="top-bar">
+        <div class="top-bar-left">
+          <button class="sidebar-toggle" id="sidebar-toggle">☰</button>
+          <h1 class="page-title" id="page-title">Command Center</h1>
+        </div>
+
+        <div class="top-bar-right">
+          <div class="status-chip healthy" id="live-status">
+            <span class="chip-dot green"></span> System: HEALTHY
+          </div>
+          <div class="status-chip ai" id="ai-status">
+            <span class="chip-dot blue"></span> AI: OpenRouter Connected
+          </div>
+          <div class="status-chip timer">
+            ⏱ Auto-refresh: <span id="refresh-counter">10s</span>
+          </div>
+        </div>
+      </header>
+
+      <!-- Main Dynamic Content Container -->
+      <main class="content-container" id="view-container">
+        <!-- Dynamic views rendered by dashboard.js -->
+      </main>
     </div>
   </div>
 
-  <script src="/static/js/dashboard.js?v=6.0.1"></script>
+  <!-- Add / Edit Device Modal -->
+  <div class="modal-backdrop hidden" id="device-form-modal">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3 id="device-modal-title">Add MikroTik Device</h3>
+        <button class="close-btn" onclick="closeDeviceFormModal()">✕</button>
+      </div>
+      <form id="device-form" onsubmit="handleDeviceFormSubmit(event)">
+        <input type="hidden" id="device-form-id" value="">
+
+        <div class="form-section">
+          <span class="form-section-title">DEVICE INFORMATION</span>
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="dev-name">Device Name *</label>
+              <input type="text" id="dev-name" required placeholder="e.g. CORE-RTR-01">
+            </div>
+            <div class="form-group">
+              <label for="dev-ip">Management IP Address *</label>
+              <input type="text" id="dev-ip" required placeholder="e.g. 103.95.4.1">
+            </div>
+            <div class="form-group">
+              <label for="dev-role">Device Role</label>
+              <select id="dev-role">
+                <option value="Core Router">Core Router</option>
+                <option value="Edge Router">Edge Router</option>
+                <option value="CGNAT Gateway">CGNAT Gateway</option>
+                <option value="Switch">Switch</option>
+                <option value="Access AP">Access AP</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="dev-location">Location / POP</label>
+              <input type="text" id="dev-location" placeholder="e.g. Yangon Data Center">
+            </div>
+          </div>
+          <div class="form-group full-width">
+            <label for="dev-desc">Description</label>
+            <input type="text" id="dev-desc" placeholder="Primary Core Router for ISP Uplinks">
+          </div>
+        </div>
+
+        <div class="form-section">
+          <span class="form-section-title">ROUTEROS API CONNECTION</span>
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="dev-protocol">API Protocol</label>
+              <select id="dev-protocol">
+                <option value="api">RouterOS API (Plain)</option>
+                <option value="api-ssl">RouterOS API-SSL</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="dev-port">API Port *</label>
+              <input type="number" id="dev-port" value="8728" required min="1" max="65535">
+            </div>
+            <div class="form-group">
+              <label for="dev-user">API Username *</label>
+              <input type="text" id="dev-user" value="admin" required>
+            </div>
+            <div class="form-group">
+              <label for="dev-pass">API Password *</label>
+              <input type="password" id="dev-pass" placeholder="Keep existing password">
+            </div>
+          </div>
+        </div>
+
+        <div class="form-section">
+          <span class="form-section-title">MONITORING CONFIGURATION</span>
+          <div class="form-grid">
+            <div class="form-group">
+              <label for="dev-monitoring">Monitoring Enabled</label>
+              <select id="dev-monitoring">
+                <option value="true">Enabled (ON)</option>
+                <option value="false">Disabled (OFF)</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="dev-interval">Collection Interval (sec)</label>
+              <input type="number" id="dev-interval" value="30" min="5" max="300">
+            </div>
+            <div class="form-group">
+              <label for="dev-profile">Monitoring Profile</label>
+              <select id="dev-profile">
+                <option value="Standard">Standard (Metrics + Anomalies)</option>
+                <option value="High-Frequency">High-Frequency (10s poll)</option>
+                <option value="Minimal">Minimal (Health Only)</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <!-- Connection Test Feedback Box -->
+        <div id="test-connection-alert" class="alert-box hidden"></div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" onclick="testFormConnection()">Test Connection</button>
+          <button type="button" class="btn btn-secondary" onclick="closeDeviceFormModal()">Cancel</button>
+          <button type="submit" class="btn btn-primary" id="btn-save-device">Save Device</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Delete Device Confirmation Modal -->
+  <div class="modal-backdrop hidden" id="delete-device-modal">
+    <div class="modal-card modal-small">
+      <div class="modal-header">
+        <h3>Delete Device Confirmation</h3>
+        <button class="close-btn" onclick="closeDeleteDeviceModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="delete-warning-icon">⚠</div>
+        <p class="delete-title">You are about to remove this device from inventory:</p>
+        <p class="delete-target" id="delete-device-name">CORE-RTR-01 (103.95.4.1)</p>
+        <p class="delete-info">This removes the device from NOC Agent active monitoring. Historical metric records will NOT be deleted. No RouterOS commands will be sent.</p>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary" onclick="closeDeleteDeviceModal()">Cancel</button>
+        <button class="btn btn-danger" id="btn-confirm-delete">Delete Device</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Comprehensive Device Detail Workspace Modal -->
+  <div class="modal-backdrop hidden" id="device-detail-modal">
+    <div class="modal-card modal-large" id="device-detail-modal-body">
+      <!-- Rendered dynamically by dashboard.js -->
+    </div>
+  </div>
+
+  <!-- Deep Investigation Workspace Modal -->
+  <div class="modal-backdrop hidden" id="investigation-modal">
+    <div class="modal-card modal-large" id="investigation-modal-body">
+      <!-- Rendered dynamically by dashboard.js -->
+    </div>
+  </div>
+
+  <script src="/static/js/dashboard.js?v=6.1.0"></script>
 </body>
 </html>
