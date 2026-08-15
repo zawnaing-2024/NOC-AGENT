@@ -254,8 +254,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 <td>${i.device_id}</td>
                 <td><strong>${i.interface_name}</strong></td>
                 <td>${i.status === 'UP' ? '<span style="color:var(--status-green)">🟢 UP</span>' : '<span style="color:var(--status-red)">🔴 DOWN</span>'}</td>
-                <td>${(i.rx_bps/1000).toFixed(1)} Kbps</td>
-                <td>${(i.tx_bps/1000).toFixed(1)} Kbps</td>
+                <td><strong>${formatBandwidth(i.rx_bps)}</strong></td>
+                <td><strong>${formatBandwidth(i.tx_bps)}</strong></td>
                 <td>${i.rx_errors}/${i.tx_errors}</td>
                 <td>${i.rx_drops}/${i.tx_drops}</td>
                 <td><span class="status-badge">${i.health}</span></td>
