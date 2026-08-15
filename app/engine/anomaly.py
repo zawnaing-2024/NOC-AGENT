@@ -102,7 +102,10 @@ class AnomalyDetector:
                 fingerprint=fp
             ))
 
-        # Traffic Drop Rule (Baseline requirement >= 10 samples)
+        # Interface Error Rule
+        # (Evaluated on running interfaces with RX/TX error counts)
+        
+        # Traffic Drop & Spike Rules (Baseline requirement >= 10 samples)
         if rx_bps_history and current_running:
             tr_bl = calculate_baseline(rx_bps_history, min_samples=10)
             if tr_bl.baseline_status == "NORMAL" and tr_bl.moving_average > 1000.0:
@@ -120,6 +123,23 @@ class AnomalyDetector:
                             "current_bps": current_bps,
                             "moving_average_bps": round(tr_bl.moving_average, 2),
                             "drop_percentage": round((1.0 - (current_bps / tr_bl.moving_average)) * 100.0, 1),
+                            "sample_count": tr_bl.sample_count
+                        },
+                        fingerprint=fp
+                    ))
+                elif current_bps > (tr_bl.moving_average * 3.0):
+                    fp = generate_fingerprint(device_id, "TRAFFIC_SPIKE", interface_name)
+                    events.append(EventRecord(
+                        event_id=str(uuid.uuid4()),
+                        device_id=device_id,
+                        type="TRAFFIC_SPIKE",
+                        severity="WARNING",
+                        source="deterministic_engine",
+                        entity=interface_name,
+                        evidence={
+                            "current_bps": current_bps,
+                            "moving_average_bps": round(tr_bl.moving_average, 2),
+                            "spike_ratio": round(current_bps / tr_bl.moving_average, 2),
                             "sample_count": tr_bl.sample_count
                         },
                         fingerprint=fp

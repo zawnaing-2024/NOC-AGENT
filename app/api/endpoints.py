@@ -70,6 +70,13 @@ def get_device_history(device_id: str, limit: int = Query(default=100, ge=1, le=
     return {"device_id": device_id, "history": metrics, "count": len(metrics)}
 
 
+@router.get("/devices/{device_id}/anomalies", status_code=status.HTTP_200_OK)
+def get_device_anomalies(device_id: str, limit: int = Query(default=100, ge=1, le=1000)):
+    """Retrieves historical anomaly events specifically for a targeted device."""
+    events = db.get_events(limit=limit, device_id=device_id)
+    return {"device_id": device_id, "anomalies": events, "count": len(events)}
+
+
 @router.get("/interfaces/{interface_name}/history", status_code=status.HTTP_200_OK)
 def get_interface_history(interface_name: str, device_id: Optional[str] = Query(default=None), limit: int = Query(default=100, ge=1, le=1000)):
     """Retrieves historical operational and traffic metrics for an interface."""

@@ -128,6 +128,38 @@ def test_correlation_grouping_and_incident_creation(mock_llm, mock_db):
     assert inc_args.root_event_id == "e1"
 
 
+def test_bgp_prefix_drop_zero_prefix_check():
+    """Verify BGP prefix drop triggers when current < 0.5 * prev, but NOT when prev == 0."""
+    # Valid drop: 100 -> 10
+    drop_events = AnomalyDetector.check_bgp_status("103.95.4.1", "10.59.190.81", current_est=True, prev_est=True, current_prefix=10, prev_prefix=100)
+    assert len(drop_events) == 1
+    assert drop_events[0].type == "BGP_PREFIX_DROP"
+
+    # Zero previous prefix: 0 -> 0 (should NOT trigger BGP_PREFIX_DROP)
+    zero_events = AnomalyDetector.check_bgp_status("103.95.4.1", "10.59.190.81", current_est=True, prev_est=True, current_prefix=0, prev_prefix=0)
+    assert len(zero_events) == 0
+
+
+def test_duplicate_event_deduplication(test_db):
+    """Verify same device + event_type + entity does not create duplicate incidents during subsequent cycles."""
+    e1 = EventRecord(event_id="e-dedup-1", device_id="103.59.163.7", type="BGP_SESSION_DOWN", severity="MAJOR", source="eng", entity="10.59.190.81", fingerprint="103.59.163.7:BGP_SESSION_DOWN:10.59.190.81")
+    e2 = EventRecord(event_id="e-dedup-2", device_id="103.59.163.7", type="BGP_SESSION_DOWN", severity="MAJOR", source="eng", entity="10.59.190.81", fingerprint="103.59.163.7:BGP_SESSION_DOWN:10.59.190.81")
+
+    with patch("app.engine.correlation.db", test_db), patch("app.engine.correlation.generate_llm_incident_summary", return_value=("BGP session down", "SUCCESS")):
+        # First cycle
+        CorrelationEngine.process_events([e1])
+        incidents_c1 = test_db.get_incidents()
+        assert len(incidents_c1) == 1
+        inc_id_1 = incidents_c1[0]["incident_id"]
+
+        # Second cycle with duplicate persistent down event
+        CorrelationEngine.process_events([e2])
+        incidents_c2 = test_db.get_incidents()
+        # MUST still be ONE incident (deduplicated into existing open incident)
+        assert len(incidents_c2) == 1
+        assert incidents_c2[0]["incident_id"] == inc_id_1
+
+
 @patch("app.engine.correlation.get_llm")
 def test_openrouter_failure_resilience(mock_get_llm, test_db):
     """Verify that if OpenRouter fails, incident persists with llm_status = 'FAILED'."""
