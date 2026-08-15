@@ -2,7 +2,7 @@ import os
 import json
 import sqlite3
 import logging
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
 from pathlib import Path
 
 from app.config import settings
@@ -599,6 +599,63 @@ class DatabaseManager:
             conn.commit()
         logger.info(f"Purged historical metrics older than {hours}h ({cutoff}): {purged}")
         return purged
+
+    def save_event(self, event_data: Union[Dict[str, Any], Any]) -> str:
+        """Helper to save or upsert an event record from dict or model."""
+        import uuid
+        if isinstance(event_data, dict):
+            e_id = event_data.get("event_id") or f"evt-{uuid.uuid4().hex[:8]}"
+            dev_id = event_data.get("device_id") or "103.59.163.7"
+            ts = event_data.get("timestamp") or datetime.now(timezone.utc).isoformat()
+            fs = event_data.get("first_seen") or ts
+            ls = event_data.get("last_seen") or ts
+            occ = event_data.get("occurrence_count", 1)
+            st = event_data.get("status", "ACTIVE")
+            tp = event_data.get("type") or event_data.get("event_type") or "ANOMALY"
+            sev = event_data.get("severity", "WARNING")
+            src = event_data.get("source", "NOC Agent")
+            ent = event_data.get("entity", "system")
+            ev = event_data.get("evidence", {})
+            fp = event_data.get("fingerprint") or f"{dev_id}:{tp}:{ent}"
+            rec = EventRecord(
+                event_id=e_id, device_id=dev_id, timestamp=ts, first_seen=fs,
+                last_seen=ls, occurrence_count=occ, status=st, type=tp,
+                severity=sev, source=src, entity=ent, evidence=ev, fingerprint=fp
+            )
+            return self.upsert_active_event(rec)
+        elif hasattr(event_data, "event_id"):
+            return self.upsert_active_event(event_data)
+        else:
+            raise ValueError("Invalid event_data format.")
+
+    def save_interface_metric(self, metric_data: Union[Dict[str, Any], Any]) -> None:
+        """Helper to insert an interface metric record from dict or model."""
+        if isinstance(metric_data, dict):
+            rec = InterfaceMetricRecord(
+                timestamp=metric_data.get("timestamp") or datetime.now(timezone.utc).isoformat(),
+                device_id=metric_data.get("device_id", "103.59.163.7"),
+                interface_name=metric_data.get("interface_name", "ether1"),
+                running=bool(metric_data.get("running", True)),
+                disabled=bool(metric_data.get("disabled", False)),
+                rx_bps=float(metric_data.get("rx_bps", 0.0)),
+                tx_bps=float(metric_data.get("tx_bps", 0.0)),
+                rx_packets=int(metric_data.get("rx_packets", 0)),
+                tx_packets=int(metric_data.get("tx_packets", 0)),
+                rx_errors=int(metric_data.get("rx_errors", 0)),
+                tx_errors=int(metric_data.get("tx_errors", 0)),
+                rx_drops=int(metric_data.get("rx_drops", 0)),
+                tx_drops=int(metric_data.get("tx_drops", 0)),
+                rx_bytes_raw=int(metric_data.get("rx_bytes_raw", 0)),
+                tx_bytes_raw=int(metric_data.get("tx_bytes_raw", 0)),
+                telemetry_valid=bool(metric_data.get("telemetry_valid", True)),
+                validation_reason=metric_data.get("validation_reason", "VALID"),
+                counter_reset=bool(metric_data.get("counter_reset", False))
+            )
+            self.insert_interface_metric(rec)
+        elif hasattr(metric_data, "device_id"):
+            self.insert_interface_metric(metric_data)
+        else:
+            raise ValueError("Invalid metric_data format.")
 
     def get_recent_interface_metrics(
         self,

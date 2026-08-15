@@ -182,7 +182,7 @@ def test_9_sudden_drop_classification():
     """Verify sudden traffic drop classification (SUDDEN_DROP)."""
     res = calculate_traffic_direction_and_deviation("RX", [1_800_000_000.0, 20_000_000.0])
     assert res["short_term_direction"] == "DROP"
-    assert res["short_term_change_pct"] >= 50.0
+    assert res["short_term_percentage"] >= 50.0
 
 
 def test_10_gradual_drop_classification():
