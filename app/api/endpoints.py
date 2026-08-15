@@ -104,22 +104,22 @@ def get_device_anomalies(device_id: str, limit: int = Query(default=100, ge=1, l
 @router.get("/interfaces/{interface_name}/history", status_code=status.HTTP_200_OK)
 def get_interface_history(interface_name: str, device_id: Optional[str] = Query(default=None), limit: int = Query(default=100, ge=1, le=1000)):
     """Retrieves historical operational and traffic metrics for an interface."""
-    dev_id = device_id or "103.59.163.7"
-    metrics = db.get_recent_interface_metrics(device_id=dev_id, interface_name=interface_name, limit=limit)
+    metrics = db.get_recent_interface_metrics(device_id=device_id, interface_name=interface_name, limit=limit)
+    dev_id = device_id or (metrics[0]["device_id"] if metrics else "103.59.163.7")
     return {"interface_name": interface_name, "device_id": dev_id, "history": metrics, "count": len(metrics)}
 
 
 @router.get("/bgp/{peer}/history", status_code=status.HTTP_200_OK)
 def get_bgp_history(peer: str, device_id: Optional[str] = Query(default=None), limit: int = Query(default=100, ge=1, le=1000)):
     """Retrieves historical BGP session state and prefix count telemetry."""
-    dev_id = device_id or "103.95.4.1"
-    metrics = db.get_recent_bgp_metrics(device_id=dev_id, peer=peer, limit=limit)
+    metrics = db.get_recent_bgp_metrics(device_id=device_id, peer=peer, limit=limit)
+    dev_id = device_id or (metrics[0]["device_id"] if metrics else "103.95.4.1")
     return {"peer": peer, "device_id": dev_id, "history": metrics, "count": len(metrics)}
 
 
 @router.get("/ospf/{neighbor}/history", status_code=status.HTTP_200_OK)
 def get_ospf_history(neighbor: str, device_id: Optional[str] = Query(default=None), limit: int = Query(default=100, ge=1, le=1000)):
     """Retrieves historical OSPF neighbor state telemetry."""
-    dev_id = device_id or "103.59.163.7"
-    metrics = db.get_recent_ospf_metrics(device_id=dev_id, neighbor=neighbor, limit=limit)
+    metrics = db.get_recent_ospf_metrics(device_id=device_id, neighbor=neighbor, limit=limit)
+    dev_id = device_id or (metrics[0]["device_id"] if metrics else "103.59.163.7")
     return {"neighbor": neighbor, "device_id": dev_id, "history": metrics, "count": len(metrics)}

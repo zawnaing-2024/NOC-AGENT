@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     TRAFFIC_SPIKE_THRESHOLD_PERCENT: float = Field(default=200.0, description="Traffic spike percentage threshold over baseline (default 200% = 3x baseline)")
     MIN_BASELINE_BPS: float = Field(default=10000.0, description="Minimum baseline bps threshold to prevent false positives on low-traffic interfaces (default 10 Kbps)")
     PERSISTENCE_SAMPLES: int = Field(default=3, description="Consecutive low samples required to trigger TRAFFIC_DROP (default 3 samples)")
+    METRIC_RETENTION_HOURS: int = Field(default=168, description="Historical metric data retention window in hours (default 168h = 7 days)")
 
     APP_HOST: str = Field(default="0.0.0.0", description="FastAPI host binding")
     APP_PORT: int = Field(default=8000, description="FastAPI port binding")
