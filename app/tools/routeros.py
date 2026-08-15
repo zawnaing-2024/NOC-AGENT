@@ -911,22 +911,168 @@ def query_interface_optical_power(api_client: Any, interface_name: str) -> Dict[
             m = res_list[0]
             rx_pow = m.get("sfp-rx-power")
             tx_pow = m.get("sfp-tx-power")
+            sfp_temp = m.get("sfp-temperature")
+            sfp_vendor = m.get("sfp-vendor-name")
+            sfp_part = m.get("sfp-vendor-part-number")
+            sfp_serial = m.get("sfp-vendor-serial")
+            sfp_present = m.get("sfp-module-present")
+
+            is_optical = parse_bool_safe(sfp_present, False) or rx_pow is not None or tx_pow is not None or sfp_vendor is not None
             return {
-                "supported": True,
+                "supported": is_optical,
                 "interface": interface_name,
                 "status": str(m.get("status", "unknown")),
                 "rate": str(m.get("rate", "unknown")),
                 "full_duplex": parse_bool_safe(m.get("full-duplex"), True),
+                "auto_negotiation": parse_bool_safe(m.get("auto-negotiation"), True),
+                "sfp_module_present": parse_bool_safe(sfp_present, False),
                 "sfp_rx_power_dbm": str(rx_pow) if rx_pow is not None else None,
                 "sfp_tx_power_dbm": str(tx_pow) if tx_pow is not None else None,
-                "sfp_rx_loss": parse_bool_safe(m.get("sfp-rx-loss"), False),
-                "sfp_tx_fault": parse_bool_safe(m.get("sfp-tx-fault"), False),
-                "sfp_temperature_c": parse_int_safe(m.get("sfp-temperature"), 0),
-                "sfp_vendor": str(m.get("sfp-vendor-name", ""))
+                "sfp_rx_loss": parse_bool_safe(m.get("sfp-rx-loss"), False) if m.get("sfp-rx-loss") is not None else None,
+                "sfp_tx_fault": parse_bool_safe(m.get("sfp-tx-fault"), False) if m.get("sfp-tx-fault") is not None else None,
+                "sfp_temperature_c": parse_int_safe(sfp_temp) if sfp_temp is not None else None,
+                "sfp_supply_voltage": str(m.get("sfp-supply-voltage")) if m.get("sfp-supply-voltage") is not None else None,
+                "sfp_vendor": str(sfp_vendor) if sfp_vendor else None,
+                "sfp_part_number": str(sfp_part) if sfp_part else None,
+                "sfp_serial": str(sfp_serial) if sfp_serial else None,
+                "sfp_type": str(m.get("sfp-type")) if m.get("sfp-type") else None
             }
     except Exception as e:
         logger.debug(f"Optical power monitoring unsupported or failed for interface {interface_name}: {e}")
     return {"supported": False, "interface": interface_name}
+
+
+def classify_interface_media(interface_data: Dict[str, Any], monitor_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Phase 6.2 Deterministic Interface Media & Hardware Type Classifier.
+    Classifies interface into: ELECTRICAL, OPTICAL, WIRELESS, VIRTUAL, VLAN, BRIDGE, BONDING, LOOPBACK, or UNKNOWN.
+    Never fabricates missing fields.
+    """
+    if not interface_data:
+        return {
+            "media_type": "UNKNOWN",
+            "confidence": "LOW",
+            "reason": "RouterOS API did not provide sufficient information to determine physical media.",
+            "optical_capable": False,
+            "details": {}
+        }
+
+    raw_name = str(interface_data.get("name", "")).lower()
+    raw_type = str(interface_data.get("type", "")).lower()
+    actual_type = str(interface_data.get("actual-type", interface_data.get("actual_type", raw_type))).lower()
+    default_name = str(interface_data.get("default-name", interface_data.get("default_name", ""))).lower()
+
+    m = monitor_data or {}
+    sfp_vendor = m.get("sfp_vendor") or interface_data.get("sfp-vendor-name")
+    sfp_part = m.get("sfp_part_number") or interface_data.get("sfp-vendor-part-number")
+    sfp_serial = m.get("sfp_serial") or interface_data.get("sfp-vendor-serial")
+    sfp_type = m.get("sfp_type") or interface_data.get("sfp-type")
+    sfp_present = m.get("sfp_module_present", interface_data.get("sfp-module-present"))
+    has_rx_pow = m.get("sfp_rx_power_dbm") is not None or interface_data.get("sfp-rx-power") is not None
+    has_tx_pow = m.get("sfp_tx_power_dbm") is not None or interface_data.get("sfp-tx-power") is not None
+
+    # 1. LOOPBACK
+    if raw_type in ["loopback", "lo"] or "loopback" in raw_name or raw_name == "lo":
+        return {
+            "media_type": "LOOPBACK",
+            "confidence": "HIGH",
+            "reason": "Interface confirmed as logical Loopback adapter.",
+            "optical_capable": False,
+            "details": {"type": raw_type}
+        }
+
+    # 2. VLAN
+    if raw_type == "vlan" or "vlan" in raw_type or default_name.startswith("vlan"):
+        return {
+            "media_type": "VLAN",
+            "confidence": "HIGH",
+            "reason": "Interface confirmed as 802.1Q VLAN logical sub-interface.",
+            "optical_capable": False,
+            "details": {"type": raw_type, "vlan_id": interface_data.get("vlan-id")}
+        }
+
+    # 3. BRIDGE
+    if raw_type == "bridge" or default_name.startswith("bridge"):
+        return {
+            "media_type": "BRIDGE",
+            "confidence": "HIGH",
+            "reason": "Interface confirmed as software Bridge domain.",
+            "optical_capable": False,
+            "details": {"type": raw_type}
+        }
+
+    # 4. BONDING
+    if raw_type in ["bond", "bonding"] or default_name.startswith("bond"):
+        return {
+            "media_type": "BONDING",
+            "confidence": "HIGH",
+            "reason": "Interface confirmed as Link Aggregation (802.3ad / Bonding) group.",
+            "optical_capable": False,
+            "details": {"type": raw_type}
+        }
+
+    # 5. WIRELESS
+    if raw_type in ["wlan", "wireless"] or default_name.startswith("wlan"):
+        return {
+            "media_type": "WIRELESS",
+            "confidence": "HIGH",
+            "reason": "Interface confirmed as 802.11 Wi-Fi Wireless interface.",
+            "optical_capable": False,
+            "details": {"type": raw_type}
+        }
+
+    # 6. VIRTUAL / TUNNEL
+    if any(t in raw_type for t in ["ovpn", "l2tp", "pppoe", "vxlan", "gre", "ipip", "eoip", "sstp", "wireguard"]):
+        return {
+            "media_type": "VIRTUAL",
+            "confidence": "HIGH",
+            "reason": f"Interface confirmed as virtual tunnel interface ({raw_type}).",
+            "optical_capable": False,
+            "details": {"type": raw_type}
+        }
+
+    # 7. OPTICAL (SFP/SFP+/QSFP Transceiver)
+    is_sfp_type = any(k in raw_type or k in actual_type or k in default_name for k in ["sfp", "sfp-sfpplus", "sfpplus", "qsfp"])
+    if is_sfp_type or sfp_present is True or sfp_vendor or sfp_part or sfp_serial or has_rx_pow or has_tx_pow:
+        return {
+            "media_type": "OPTICAL",
+            "confidence": "HIGH" if (sfp_vendor or has_rx_pow or is_sfp_type) else "MEDIUM",
+            "reason": f"RouterOS metadata confirmed SFP/SFP+ optical transceiver port (vendor={sfp_vendor or 'detected'}).",
+            "optical_capable": True,
+            "details": {
+                "vendor": sfp_vendor or None,
+                "part_number": sfp_part or None,
+                "serial": sfp_serial or None,
+                "sfp_type": sfp_type or None,
+                "rx_power_dbm": m.get("sfp_rx_power_dbm"),
+                "tx_power_dbm": m.get("sfp_tx_power_dbm"),
+                "temperature_c": m.get("sfp_temperature_c"),
+                "voltage": m.get("sfp_supply_voltage")
+            }
+        }
+
+    # 8. ELECTRICAL / COPPER (Ethernet RJ45)
+    if raw_type == "ether" or default_name.startswith("ether"):
+        return {
+            "media_type": "ELECTRICAL",
+            "confidence": "HIGH",
+            "reason": "RouterOS interface metadata confirmed copper electrical Ethernet interface.",
+            "optical_capable": False,
+            "details": {
+                "speed": m.get("rate") or interface_data.get("speed"),
+                "full_duplex": m.get("full_duplex", interface_data.get("full-duplex")),
+                "auto_negotiation": m.get("auto_negotiation", interface_data.get("auto-negotiation"))
+            }
+        }
+
+    # 9. UNKNOWN
+    return {
+        "media_type": "UNKNOWN",
+        "confidence": "LOW",
+        "reason": "RouterOS API did not provide sufficient information to determine physical media.",
+        "optical_capable": False,
+        "details": {}
+    }
 
 
 def query_interface_logs(api_client: Any, interface_name: str, limit: int = 20) -> List[Dict[str, Any]]:

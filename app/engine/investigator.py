@@ -295,6 +295,7 @@ class DeepNocInvestigator:
             query_interface_ping_test,
             query_interface_optical_power,
             query_interface_logs,
+            classify_interface_media,
         )
 
         decision_tree_path = ["START_TRAFFIC_DROP_INVESTIGATION"]
@@ -397,17 +398,20 @@ class DeepNocInvestigator:
 
         # 2. Live RouterOS API Checks
         iface_state = {"status": "UNKNOWN", "running": False, "disabled": False}
+        iface_raw_dict = {}
         ip_info = {"has_ip": False}
         ping_res = {"reachable": False}
         optical_info = {"supported": False}
+        media_info = {"media_type": "UNKNOWN", "confidence": "LOW", "reason": "Not evaluated", "optical_capable": False}
         recent_logs = []
 
         try:
             with get_routeros_client(host=device_id) as api:
-                # A. Query Interface State
+                # A. Query Interface State & Metadata
                 p_if = api.path("/interface")
                 for item in list(p_if):
                     if str(item.get("name", "")).lower() == interface_name.lower():
+                        iface_raw_dict = item
                         iface_state = {
                             "name": interface_name,
                             "type": str(item.get("type", "ether")),
@@ -427,17 +431,23 @@ class DeepNocInvestigator:
 
                 decision_tree_path.append("CHECK_INTERFACE_STATE")
 
+                # B. Query Optical Transceiver Info (if supported)
+                optical_info = query_interface_optical_power(api, interface_name)
+
+                # C. Perform Deterministic Interface Media Classification
+                media_info = classify_interface_media(iface_raw_dict or {"name": interface_name, "type": iface_state.get("type", "ether")}, optical_info)
+                decision_tree_path.append(f"CLASSIFY_MEDIA({media_info['media_type']})")
+
                 # Decision Tree: If link is physical DOWN vs UP
                 if not iface_state.get("running"):
                     decision_tree_path.append("INTERFACE_STATE_DOWN")
                     decision_tree_path.append("PHYSICAL_LINK_FAILURE")
                 else:
                     decision_tree_path.append("INTERFACE_STATE_UP")
-                    # B. Check IP Address
+                    # D. Check IP Address
                     ip_info = query_interface_ip_address(api, interface_name)
                     if ip_info.get("has_ip"):
                         decision_tree_path.append("HAS_IP_TRUE")
-                        # C. Find next-hop / BGP peer IP destination for ping test
                         target_dest = None
                         bgp_peers = db.get_recent_bgp_metrics(device_id)
                         if bgp_peers and bgp_peers[0].get("remote_address"):
@@ -463,10 +473,13 @@ class DeepNocInvestigator:
                         decision_tree_path.append("HAS_IP_FALSE")
                         decision_tree_path.append("L2_INTERFACE_INVESTIGATION")
 
-                # D. Query Optical Power (SFP Transceiver)
-                optical_info = query_interface_optical_power(api, interface_name)
-                if optical_info.get("supported"):
-                    decision_tree_path.append("OPTICAL_POWER_AUDITED")
+                # Media Workflow Branching
+                if media_info["media_type"] == "ELECTRICAL":
+                    decision_tree_path.append("ELECTRICAL_COPPER_CHECK")
+                elif media_info["media_type"] == "OPTICAL":
+                    decision_tree_path.append("OPTICAL_SFP_POWER_CHECK")
+                elif media_info["media_type"] in ["VLAN", "BRIDGE", "BONDING", "VIRTUAL", "LOOPBACK"]:
+                    decision_tree_path.append(f"LOGICAL_{media_info['media_type']}_CHECK")
 
                 # E. Audit System Logs
                 recent_logs = query_interface_logs(api, interface_name, limit=10)
@@ -483,6 +496,7 @@ class DeepNocInvestigator:
             "rx_traffic_change": rx_change,
             "tx_traffic_change": tx_change,
             "time_series": time_series,
+            "media_classification": media_info,
             "interface_state": iface_state,
             "ip_investigation": ip_info,
             "ping_investigation": ping_res,

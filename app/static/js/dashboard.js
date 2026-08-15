@@ -1400,6 +1400,61 @@ async function openInvestigationWorkspace(incidentId) {
         </div>`;
     }
 
+    const mediaInfo = tInv.media_classification || { media_type: 'UNKNOWN', confidence: 'LOW', reason: '' };
+    const mType = mediaInfo.media_type || 'UNKNOWN';
+
+    // Hardware & Media State Card HTML
+    let mediaCardHtml = '';
+    if (mType === 'OPTICAL') {
+      mediaCardHtml = `
+        <div class="form-section" style="border-top:3px solid #a855f7;">
+          <span class="form-section-title">🟣 SFP / OPTICAL TRANSCEIVER</span>
+          <div style="display:flex; flex-direction:column; gap:6px; font-size:13px; margin-top:8px;">
+            <div>Media Type: <strong style="color:#c084fc;">🟣 OPTICAL / SFP+</strong></div>
+            <div>Vendor: <strong>${escapeHtml(optInfo.sfp_vendor || 'Detected')}</strong></div>
+            <div>Part Number: <code>${escapeHtml(optInfo.sfp_part_number || 'N/A')}</code></div>
+            <div>Serial: <code>${escapeHtml(optInfo.sfp_serial || 'N/A')}</code></div>
+            <div>RX Optical Power: <strong style="color:var(--accent-blue);">${optInfo.sfp_rx_power_dbm ? optInfo.sfp_rx_power_dbm + ' dBm' : 'N/A'}</strong></div>
+            <div>TX Optical Power: <strong style="color:var(--status-green);">${optInfo.sfp_tx_power_dbm ? optInfo.sfp_tx_power_dbm + ' dBm' : 'N/A'}</strong></div>
+            <div>Temperature: <strong>${optInfo.sfp_temperature_c !== null && optInfo.sfp_temperature_c !== undefined ? optInfo.sfp_temperature_c + ' °C' : 'N/A'}</strong></div>
+          </div>
+        </div>`;
+    } else if (mType === 'ELECTRICAL') {
+      mediaCardHtml = `
+        <div class="form-section" style="border-top:3px solid #3b82f6;">
+          <span class="form-section-title">🟦 PHYSICAL ELECTRICAL / COPPER INTERFACE</span>
+          <div style="display:flex; flex-direction:column; gap:6px; font-size:13px; margin-top:8px;">
+            <div>Media Type: <strong style="color:#60a5fa;">🟦 ELECTRICAL / COPPER (RJ45)</strong></div>
+            <div>Optical Monitoring: <span class="badge badge-warning">NOT APPLICABLE</span></div>
+            <div>Negotiated Speed: <strong>${escapeHtml(optInfo.rate || ifState.speed || 'Auto / 1 Gbps')}</strong></div>
+            <div>Duplex Mode: <strong>${optInfo.full_duplex ? 'FULL DUPLEX' : 'HALF / AUTO'}</strong></div>
+            <div>Auto Negotiation: <strong>${optInfo.auto_negotiation !== false ? 'YES' : 'NO'}</strong></div>
+            <div>Hardware Errors: <strong>${ifState.rx_errors || 0} / ${ifState.tx_errors || 0}</strong></div>
+          </div>
+        </div>`;
+    } else if (['VLAN', 'BRIDGE', 'BONDING', 'VIRTUAL', 'LOOPBACK'].includes(mType)) {
+      mediaCardHtml = `
+        <div class="form-section" style="border-top:3px solid #eab308;">
+          <span class="form-section-title">🟨 LOGICAL / VIRTUAL INTERFACE (${escapeHtml(mType)})</span>
+          <div style="display:flex; flex-direction:column; gap:6px; font-size:13px; margin-top:8px;">
+            <div>Media Type: <strong style="color:#fde047;">🟨 LOGICAL / ${escapeHtml(mType)}</strong></div>
+            <div>Optical Monitoring: <span class="badge badge-warning">NOT APPLICABLE</span></div>
+            <div>Classification Reason: <span>${escapeHtml(mediaInfo.reason || 'Logical adapter')}</span></div>
+            <div>Operational State: <strong>${ifState.running ? '🟢 ACTIVE' : '🔴 INACTIVE'}</strong></div>
+          </div>
+        </div>`;
+    } else {
+      mediaCardHtml = `
+        <div class="form-section">
+          <span class="form-section-title">⚪ UNKNOWN MEDIA TYPE</span>
+          <div style="display:flex; flex-direction:column; gap:6px; font-size:13px; margin-top:8px;">
+            <div>Media Type: <strong>⚪ UNKNOWN</strong></div>
+            <div>Confidence: <span class="badge badge-warning">LOW</span></div>
+            <div>Reason: <span>${escapeHtml(mediaInfo.reason || 'RouterOS API did not provide sufficient media info.')}</span></div>
+          </div>
+        </div>`;
+    }
+
     // Live RouterOS API Interface & Connectivity Checks
     html += `
       <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:16px; margin-bottom:24px;">
@@ -1424,18 +1479,7 @@ async function openInvestigationWorkspace(incidentId) {
           </div>
         </div>
 
-        <div class="form-section">
-          <span class="form-section-title">SFP OPTICAL TRANSCEIVER MONITOR</span>
-          <div style="display:flex; flex-direction:column; gap:6px; font-size:13px; margin-top:8px;">
-            <div>Optical Monitor: <strong>${optInfo.supported ? 'Supported' : 'N/A / Copper Link'}</strong></div>
-            ${optInfo.supported ? `
-              <div>RX Optical Power: <strong>${optInfo.sfp_rx_power_dbm || 'N/A'} dBm</strong></div>
-              <div>TX Optical Power: <strong>${optInfo.sfp_tx_power_dbm || 'N/A'} dBm</strong></div>
-              <div>Temperature: <strong>${optInfo.sfp_temperature_c || 0} °C</strong></div>
-              <div>Vendor: <strong>${escapeHtml(optInfo.sfp_vendor || 'Generic')}</strong></div>
-            ` : '<div>Optical telemetry not supported on interface.</div>'}
-          </div>
-        </div>
+        ${mediaCardHtml}
       </div>`;
 
     // Evidence Table
