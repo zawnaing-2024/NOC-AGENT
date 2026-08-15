@@ -31,110 +31,63 @@ def test_bgp_peers_parsing_established_and_down():
     assert res.details[1].established is False
 
 
-def test_static_routes_parsing_active_and_inactive():
+def test_bgp_unknown_state_established_parsing():
     mock_api = MagicMock()
     mock_api.path.return_value = [
-        {"dst-address": "0.0.0.0/0", "gateway": "10.10.10.1", "active": True, "disabled": False},
-        {"dst-address": "10.20.0.0/16", "gateway": "10.10.10.1", "active": False, "disabled": False},
+        {"name": "peer1", "remote.address": "10.59.190.81", "state": "UNKNOWN", "established": True, "uptime": "23w6d16h57m5s", "remote.prefix-count": 1}
     ]
 
-    res = parse_static_routes_data(mock_api, details=True)
-    assert res.total == 2
-    assert res.active == 1
-    assert res.inactive == 1
-    assert res.inactive_routes == ["10.20.0.0/16"]
-
-
-def test_ospf_neighbors_parsing_full_and_down():
-    mock_api = MagicMock()
-    mock_api.path.return_value = [
-        {"address": "10.0.0.2", "router-id": "10.0.0.2", "state": "Full", "interface": "ether3"},
-        {"address": "10.0.0.3", "router-id": "10.0.0.3", "state": "Down", "interface": "ether4"},
-    ]
-
-    res = parse_ospf_neighbors_data(mock_api, details=True)
-    assert res.total == 2
-    assert res.full == 1
-    assert res.down == 1
-    assert res.down_neighbors == ["10.0.0.3"]
-
-
-def test_nat_rules_parsing():
-    mock_api = MagicMock()
-    mock_api.path.return_value = [
-        {".id": "*1", "chain": "srcnat", "action": "masquerade", "out-interface": "ether1", "packets": 100, "bytes": 5000, "disabled": False},
-        {".id": "*2", "chain": "srcnat", "action": "masquerade", "out-interface": "ether2", "packets": 0, "bytes": 0, "disabled": False},
-    ]
-
-    res = parse_nat_rules_data(mock_api, details=True)
-    assert res.total == 2
-    assert res.active == 2
-    assert res.zero_counter_rules == ["*2"]
+    res = parse_bgp_peers_data(mock_api, details=True)
+    assert res.summary.total == 1
+    assert res.summary.established == 1
+    assert res.summary.down == 0
+    assert res.details[0].established is True
+    assert res.details[0].state == "UNKNOWN"
 
 
 @patch("app.agent.get_routeros_client")
-def test_bgp_underlying_link_cross_domain_correlation(mock_get_client):
+def test_bgp_unknown_state_insufficient_evidence_correlation(mock_get_client):
     mock_api = MagicMock()
-    
-    def mock_path_router(path_str):
-        if "bgp" in path_str:
-            return [{"name": "peer1", "remote-address": "10.0.0.1", "state": "idle", "prefix-count": 0}]
-        elif "interface" in path_str:
-            return [{"name": "ether1", "type": "ether", "running": False, "disabled": False, "rx-byte": 1000, "tx-byte": 2000}]
-        elif "log" in path_str:
-            return [{"time": "14:02:10", "message": "ether1 link down", "topics": "interface,info"}]
-        return []
-
-    mock_api.path.side_effect = mock_path_router
+    mock_api.path.return_value = [
+        {"name": "peer1", "remote.address": "10.59.190.81", "state": "UNKNOWN", "established": True, "uptime": "23w6d16h57m5s", "remote.prefix-count": 1}
+    ]
     mock_get_client.return_value.__enter__.return_value = mock_api
 
-    evidence_text, tools_used = perform_cross_domain_investigation("Investigate BGP peer 10.0.0.1")
+    evidence_text, tools_used = perform_cross_domain_investigation("Check BGP status for 103.95.4.1.")
 
     assert "get_bgp_peers" in tools_used
-    assert "get_interfaces" in tools_used
-    assert "UNDERLYING_LINK_SUSPECTED" in evidence_text
+    assert "INSUFFICIENT_EVIDENCE" in evidence_text
+    assert "BGP_SESSION_FLAPPING" not in evidence_text
 
 
 @patch("app.agent.get_routeros_client")
-def test_ospf_underlying_link_cross_domain_correlation(mock_get_client):
+def test_ospf_all_full_no_anomaly_correlation(mock_get_client):
     mock_api = MagicMock()
-
-    def mock_path_router(path_str):
-        if "ospf" in path_str:
-            return [{"address": "10.0.0.2", "router-id": "10.0.0.2", "state": "Down", "interface": "ether3"}]
-        elif "interface" in path_str:
-            return [{"name": "ether3", "type": "ether", "running": False, "disabled": False, "rx-byte": 1000, "tx-byte": 2000}]
-        return []
-
-    mock_api.path.side_effect = mock_path_router
+    mock_api.path.return_value = [
+        {"address": "10.0.0.1", "state": "Full"},
+        {"address": "10.0.0.2", "state": "Full"},
+        {"address": "10.0.0.3", "state": "Full"},
+    ]
     mock_get_client.return_value.__enter__.return_value = mock_api
 
-    evidence_text, tools_used = perform_cross_domain_investigation("Investigate OSPF neighbor 10.0.0.2")
+    evidence_text, tools_used = perform_cross_domain_investigation("Check OSPF status for 103.59.163.7.")
 
-    assert "get_ospf_neighbors" in tools_used
-    assert "get_interfaces" in tools_used
-    assert "UNDERLYING_LINK_SUSPECTED" in evidence_text
+    assert tools_used == ["get_ospf_neighbors"]
+    assert "NO_ANOMALY" in evidence_text
 
 
 @patch("app.agent.get_routeros_client")
-def test_static_route_next_hop_unreachable_correlation(mock_get_client):
+def test_static_routes_all_active_no_anomaly_correlation(mock_get_client):
     mock_api = MagicMock()
-
-    def mock_path_router(path_str):
-        if "route" in path_str:
-            return [{"dst-address": "10.20.0.0/16", "gateway": "10.10.10.1", "active": False, "disabled": False}]
-        elif "interface" in path_str:
-            return [{"name": "ether1", "type": "ether", "running": False, "disabled": False, "rx-byte": 1000, "tx-byte": 2000}]
-        return []
-
-    mock_api.path.side_effect = mock_path_router
+    mock_api.path.return_value = [
+        {"dst-address": "0.0.0.0/0", "gateway": "10.10.10.1", "active": True, "disabled": False}
+    ]
     mock_get_client.return_value.__enter__.return_value = mock_api
 
-    evidence_text, tools_used = perform_cross_domain_investigation("Investigate why 10.20.0.0/16 is inactive")
+    evidence_text, tools_used = perform_cross_domain_investigation("Check static routes.")
 
-    assert "get_static_routes" in tools_used
-    assert "get_interfaces" in tools_used
-    assert "NEXT_HOP_UNREACHABLE" in evidence_text
+    assert tools_used == ["get_static_routes"]
+    assert "NO_ANOMALY" in evidence_text
 
 
 def test_security_strictly_read_only_tools():

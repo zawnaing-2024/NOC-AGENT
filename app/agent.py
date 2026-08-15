@@ -80,11 +80,12 @@ Do not claim customer or service impact without evidence.
 Prefer the simplest explanation supported by multiple independent evidence points.
 
 RCA CLASSIFICATION CATEGORIES:
+- NO_ANOMALY: All sessions, interfaces, routes, and neighbors are operating normally with zero detected faults.
 - UNDERLYING_LINK_SUSPECTED: Primary BGP peer, OSPF neighbor, or static route interface is LINK_DOWN / operationally down.
 - NEXT_HOP_UNREACHABLE: Static route gateway or next-hop IP is inactive/unreachable.
 - UPSTREAM_DEPENDENCY: NAT outbound interface or upstream link is down/unreachable.
 - BGP_SESSION_DOWN: BGP peer session is non-established without underlying link down evidence.
-- BGP_SESSION_FLAPPING: BGP peer session repeatedly transitions state.
+- BGP_SESSION_FLAPPING: BGP peer session repeatedly transitions state (evidenced by log events or reset uptime).
 - BGP_PREFIX_ANOMALY: Unexpected drop to zero received prefixes.
 - OSPF_ADJACENCY_DOWN: OSPF neighbor state is Down without underlying link down evidence.
 - OSPF_ADJACENCY_FLAPPING: OSPF neighbor repeatedly transitions state.
@@ -92,15 +93,31 @@ RCA CLASSIFICATION CATEGORIES:
 - ROUTE_MISSING: Expected static/dynamic route absent from routing table.
 - NAT_RULE_DISABLED: NAT rule is administratively disabled.
 - NAT_TRAFFIC_ANOMALY: Active NAT rule matching 0 packets/bytes where traffic expected.
-- PHYSICAL_LINK_SUSPECTED: Interface repeatedly flaps link state.
-- TRAFFIC_OR_ERROR_ANOMALY: Active interface with elevated RX/TX error or drop counters.
 - EXPECTED_OR_INTENTIONAL_STATE: Item is administratively disabled or in normal standby.
-- INSUFFICIENT_EVIDENCE: Anomaly exists but evidence is insufficient to determine root cause.
+- INSUFFICIENT_EVIDENCE: Anomaly exists or state representation is uncertain/inconsistent (e.g. established=true with state=UNKNOWN), but evidence is insufficient to determine root cause.
 
-CONFIDENCE RULES:
-- LOW: Only one weak evidence source.
-- MEDIUM: Multiple supporting evidence points.
-- HIGH: Multiple independent evidence sources strongly support the same conclusion.
+STRICT NOC REPORT RULES:
+
+1. HEALTHY OPERATIONAL RULES:
+   - When all OSPF neighbors are Full or all BGP sessions are established and healthy:
+     - ANOMALIES MUST be: "None detected."
+     - RCA MUST be: "NO_ANOMALY"
+     - RCA_CONFIDENCE MUST be: "HIGH"
+     - Do NOT use EXPECTED_OR_INTENTIONAL_STATE when no anomaly exists!
+     - RECOMMENDED_NEXT_CHECKS: For healthy OSPF/BGP, do not recommend configuration verification. Terminate normally.
+
+2. BGP UNKNOWN STATE RULE:
+   - If established=true and uptime is long, but state=UNKNOWN:
+     - ANOMALIES MUST state: "The normalized state field is UNKNOWN despite the session being established."
+     - RCA MUST be: "INSUFFICIENT_EVIDENCE"
+     - RCA_CONFIDENCE MUST be: "LOW"
+     - RCA explanation MUST state: "The session is established and has a long uptime, but the normalized state field is reported as UNKNOWN. This appears to be an evidence/representation inconsistency rather than evidence of a BGP fault."
+     - You MUST NOT classify state=UNKNOWN with established=true as BGP_SESSION_FLAPPING, BGP_SESSION_DOWN, or configuration failure!
+     - RECOMMENDED_NEXT_CHECKS MUST state: "Validate the normalized state field if needed."
+
+3. CORRELATION & IMPACT DISCIPLINE:
+   - BGP established ONLY proves the BGP session is established. Do NOT say "Layer-3 routing is functioning correctly". Use precise language: "The BGP session is established."
+   - If topology/dependency information is unavailable, IMPACT MUST be: "Service or dependency impact cannot be determined from the available evidence." (Do NOT invent customer, upstream, primary, backup, core, or transit).
 
 Reasoning Output Format:
 Your response MUST strictly follow this 10-section NOC format:
@@ -115,20 +132,20 @@ NORMAL CONDITIONS
 <Healthy system metrics, ACTIVE interfaces, established BGP peers, active routes, Full OSPF neighbors>
 
 ANOMALIES
-<Detected faults across BGP, Static Routes, OSPF, NAT, or Interfaces>
+<Detected faults or state inconsistencies, or 'None detected.' if fully healthy>
 
 CORRELATION
 <Explicit cross-domain dependency analysis showing how layer-2/interface state affects layer-3 routing/NAT>
 
 RCA
-<RCA Category Name>
-<Evidence-backed explanation. Never claim 'bad cable' or 'broken BGP config' without direct proof>
+<RCA Category Name: NO_ANOMALY | INSUFFICIENT_EVIDENCE | UNDERLYING_LINK_SUSPECTED | NEXT_HOP_UNREACHABLE | UPSTREAM_DEPENDENCY | BGP_SESSION_DOWN | OSPF_ADJACENCY_DOWN>
+<Evidence-backed explanation>
 
 RCA_CONFIDENCE
-<LOW | MEDIUM | HIGH - rationale based on evidence completeness>
+<LOW | MEDIUM | HIGH>
 
 IMPACT
-<State 'Dependency relationship cannot be established from the available evidence.' unless explicit evidence exists>
+<Evidence-backed impact or 'Service or dependency impact cannot be determined from the available evidence.'>
 
 UNCERTAINTIES
 <Missing info such as peer router status or physical layer test results>
@@ -161,7 +178,7 @@ def perform_cross_domain_investigation(user_prompt: str) -> Tuple[str, List[str]
     """
     Python-driven cross-domain evidence collection & correlation engine (Max 3 stages):
     Stage 1: Intent detection & target router selection & primary domain summary fetching
-    Stage 2: Targeted domain detail investigation
+    Stage 2: Targeted domain detail investigation (Only when anomalies exist)
     Stage 3: Cross-domain dependency matching (Layer-2 interface state correlation)
     Returns (correlated_evidence_text, tools_used_list).
     """
@@ -181,13 +198,29 @@ def perform_cross_domain_investigation(user_prompt: str) -> Tuple[str, List[str]
             bgp_data = parse_bgp_peers_data(api, details=True)
             evidence_blocks.append(f"BGP Session Summary & Details: {bgp_data.model_dump_json(exclude_none=True)}")
 
-            target_peer = bgp_data.summary.down_peers[0] if bgp_data.summary.down_peers else None
-            
-            if target_peer or "investigate" in prompt_lower or "peer" in prompt_lower:
-                peer_name = target_peer or "10.0.0.1"
+            down_peers = bgp_data.summary.down_peers
+            has_unknown_established = False
+            if bgp_data.details:
+                for p in bgp_data.details:
+                    if p.established and p.state == "UNKNOWN":
+                        has_unknown_established = True
+
+            # If session is established but state is UNKNOWN
+            if has_unknown_established and not down_peers:
+                evidence_blocks.append(
+                    "PYTHON CORRELATION FINDING: BGP session established=True, but state=UNKNOWN. "
+                    "No flap or reset evidence detected. "
+                    "Classification: INSUFFICIENT_EVIDENCE. "
+                    "Reasoning: The session is established and has a long uptime, but the normalized state field is reported as UNKNOWN. "
+                    "This appears to be an evidence/representation inconsistency rather than evidence of a BGP fault."
+                )
+            elif not down_peers and bgp_data.summary.established > 0 and not has_unknown_established:
+                evidence_blocks.append("PYTHON CORRELATION FINDING: All BGP sessions are established and healthy. Classification: NO_ANOMALY.")
+            elif down_peers:
+                target_peer = down_peers[0]
                 tools_used.append("get_bgp_peer_detail")
-                peer_detail = parse_bgp_peer_detail(api, peer_name)
-                evidence_blocks.append(f"Target BGP Peer Detail ({peer_name}): {peer_detail.model_dump_json()}")
+                peer_detail = parse_bgp_peer_detail(api, target_peer)
+                evidence_blocks.append(f"Target BGP Peer Detail ({target_peer}): {peer_detail.model_dump_json()}")
 
                 tools_used.append("get_routing_logs")
                 logs_res = parse_routing_logs_data(api, filter_text="bgp")
@@ -202,7 +235,7 @@ def perform_cross_domain_investigation(user_prompt: str) -> Tuple[str, List[str]
                     tools_used.append("get_interface_detail")
                     iface_detail = parse_single_interface_detail(api, down_iface)
                     evidence_blocks.append(f"Cross-Domain Dependency Interface ({down_iface}): {iface_detail.model_dump_json()}")
-                    evidence_blocks.append(f"PYTHON CORRELATION FINDING: BGP peer {peer_name} is DOWN. Underlying interface {down_iface} is LINK_DOWN. Primary RCA Candidate: UNDERLYING_LINK_SUSPECTED.")
+                    evidence_blocks.append(f"PYTHON CORRELATION FINDING: BGP peer {target_peer} is DOWN. Underlying interface {down_iface} is LINK_DOWN. Primary RCA Candidate: UNDERLYING_LINK_SUSPECTED.")
 
         # DOMAIN 2: OSPF
         elif "ospf" in prompt_lower or "neighbor" in prompt_lower:
@@ -210,12 +243,13 @@ def perform_cross_domain_investigation(user_prompt: str) -> Tuple[str, List[str]
             ospf_data = parse_ospf_neighbors_data(api, details=True)
             evidence_blocks.append(f"OSPF Neighbor Summary & Details: {ospf_data.model_dump_json(exclude_none=True)}")
 
-            target_nbr = ospf_data.down_neighbors[0] if ospf_data.down_neighbors else None
-            if target_nbr or "investigate" in prompt_lower:
-                nbr_name = target_nbr or "10.0.0.2"
+            if ospf_data.down == 0 and ospf_data.total > 0:
+                evidence_blocks.append("PYTHON CORRELATION FINDING: All OSPF neighbors are Full. Classification: NO_ANOMALY.")
+            elif ospf_data.down_neighbors:
+                target_nbr = ospf_data.down_neighbors[0]
                 tools_used.append("get_ospf_neighbor_detail")
-                nbr_detail = parse_single_ospf_neighbor_detail(api, nbr_name)
-                evidence_blocks.append(f"Target OSPF Neighbor Detail ({nbr_name}): {nbr_detail.model_dump_json()}")
+                nbr_detail = parse_single_ospf_neighbor_detail(api, target_nbr)
+                evidence_blocks.append(f"Target OSPF Neighbor Detail ({target_nbr}): {nbr_detail.model_dump_json()}")
 
                 tools_used.append("get_interfaces")
                 iface_summary = parse_interfaces_data(api, details=False)
@@ -223,7 +257,7 @@ def perform_cross_domain_investigation(user_prompt: str) -> Tuple[str, List[str]
 
                 if iface_summary.summary.link_down > 0:
                     down_iface = iface_summary.summary.link_down_interfaces[0]
-                    evidence_blocks.append(f"PYTHON CORRELATION FINDING: OSPF neighbor {nbr_name} is Down on {nbr_detail.interface}. Interface {down_iface} is LINK_DOWN. Primary RCA Candidate: UNDERLYING_LINK_SUSPECTED.")
+                    evidence_blocks.append(f"PYTHON CORRELATION FINDING: OSPF neighbor {target_nbr} is Down on {nbr_detail.interface}. Interface {down_iface} is LINK_DOWN. Primary RCA Candidate: UNDERLYING_LINK_SUSPECTED.")
 
         # DOMAIN 3: STATIC ROUTING
         elif "route" in prompt_lower or "routing" in prompt_lower or "gateway" in prompt_lower or bool(re.search(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2}\b", prompt_lower)):
@@ -231,12 +265,13 @@ def perform_cross_domain_investigation(user_prompt: str) -> Tuple[str, List[str]
             routes_data = parse_static_routes_data(api, details=True)
             evidence_blocks.append(f"Static Route Table & Details: {routes_data.model_dump_json(exclude_none=True)}")
 
-            target_dst = routes_data.inactive_routes[0] if routes_data.inactive_routes else None
-            if target_dst or "investigate" in prompt_lower or "inactive" in prompt_lower:
-                dst_name = target_dst or "10.20.0.0/16"
+            if routes_data.inactive == 0:
+                evidence_blocks.append("PYTHON CORRELATION FINDING: All static routes are active. Classification: NO_ANOMALY.")
+            elif routes_data.inactive_routes:
+                target_dst = routes_data.inactive_routes[0]
                 tools_used.append("get_route")
-                route_detail = parse_single_route_detail(api, dst_name)
-                evidence_blocks.append(f"Target Route Detail ({dst_name}): {route_detail.model_dump_json()}")
+                route_detail = parse_single_route_detail(api, target_dst)
+                evidence_blocks.append(f"Target Route Detail ({target_dst}): {route_detail.model_dump_json()}")
 
                 tools_used.append("get_interfaces")
                 iface_summary = parse_interfaces_data(api, details=False)
@@ -244,7 +279,7 @@ def perform_cross_domain_investigation(user_prompt: str) -> Tuple[str, List[str]
 
                 if iface_summary.summary.link_down > 0:
                     down_iface = iface_summary.summary.link_down_interfaces[0]
-                    evidence_blocks.append(f"PYTHON CORRELATION FINDING: Static route {dst_name} via gateway {route_detail.gateway} is active=false. Gateway egress interface {down_iface} is LINK_DOWN. Primary RCA Candidate: NEXT_HOP_UNREACHABLE.")
+                    evidence_blocks.append(f"PYTHON CORRELATION FINDING: Static route {target_dst} via gateway {route_detail.gateway} is active=false. Gateway egress interface {down_iface} is LINK_DOWN. Primary RCA Candidate: NEXT_HOP_UNREACHABLE.")
 
         # DOMAIN 4: NAT
         elif "nat" in prompt_lower or "masquerade" in prompt_lower or "firewall" in prompt_lower:

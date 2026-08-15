@@ -411,11 +411,15 @@ def parse_bgp_peers_data(api_client: Any, details: bool = False) -> BgpPeersResp
         name = str(item.get("name", item.get("remote.as", "bgp-peer")))
         remote_address = str(item.get("remote.address", item.get("remote-address", item.get("address", "unknown"))))
         local_address = str(item.get("local.address", item.get("local-address", "")))
-        state = str(item.get("state", item.get("session-state", "unknown"))).upper()
+        
+        raw_state = str(item.get("state", item.get("session-state", "unknown"))).upper()
+        established_flag = parse_bool_safe(item.get("established"), False) or (raw_state.lower() == "established")
+        
+        # Preserve exact raw state if present (e.g. UNKNOWN) or default to ESTABLISHED if established flag is True
+        state = raw_state if raw_state != "" else ("ESTABLISHED" if established_flag else "DOWN")
         uptime = str(item.get("uptime", item.get("established-time", ""))) or None
-        established = (state.lower() == "established") or parse_bool_safe(item.get("established"), False)
 
-        if established:
+        if established_flag:
             established_cnt += 1
         else:
             down_cnt += 1
@@ -433,7 +437,7 @@ def parse_bgp_peers_data(api_client: Any, details: bool = False) -> BgpPeersResp
                     local_address=local_address,
                     state=state,
                     uptime=uptime,
-                    established=established,
+                    established=established_flag,
                     prefix_count=prefix_count,
                     remote_as=str(remote_as_val) if remote_as_val is not None else None,
                     local_as=str(local_as_val) if local_as_val is not None else None,
