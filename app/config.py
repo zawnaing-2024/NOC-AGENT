@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     COLLECTOR_INTERVAL_SECONDS: int = Field(default=60, description="Background telemetry collection interval in seconds")
     CORRELATION_WINDOW_SECONDS: int = Field(default=300, description="Correlation window for grouping related events into an incident (default 5 min)")
 
+    # Phase 4.4 Event Lifecycle & Traffic Threshold Configuration
+    TRAFFIC_DROP_PERCENT: float = Field(default=70.0, description="Traffic drop percentage threshold (default 70%)")
+    MIN_BASELINE_BPS: float = Field(default=10000.0, description="Minimum baseline bps threshold to prevent false positives on low-traffic interfaces (default 10 Kbps)")
+    PERSISTENCE_SAMPLES: int = Field(default=3, description="Consecutive low samples required to trigger TRAFFIC_DROP (default 3 samples)")
+
     APP_HOST: str = Field(default="0.0.0.0", description="FastAPI host binding")
     APP_PORT: int = Field(default=8000, description="FastAPI port binding")
 

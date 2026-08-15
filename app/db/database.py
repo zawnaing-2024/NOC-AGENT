@@ -146,6 +146,10 @@ class DatabaseManager:
                     event_id TEXT PRIMARY KEY,
                     device_id TEXT,
                     timestamp TEXT,
+                    first_seen TEXT,
+                    last_seen TEXT,
+                    occurrence_count INTEGER DEFAULT 1,
+                    status TEXT DEFAULT 'ACTIVE',
                     type TEXT,
                     severity TEXT,
                     source TEXT,
@@ -154,6 +158,17 @@ class DatabaseManager:
                     fingerprint TEXT
                 )
             """)
+
+            # Schema migration for events
+            event_cols = [c[1] for c in cursor.execute("PRAGMA table_info(events)").fetchall()]
+            if "first_seen" not in event_cols:
+                cursor.execute("ALTER TABLE events ADD COLUMN first_seen TEXT")
+            if "last_seen" not in event_cols:
+                cursor.execute("ALTER TABLE events ADD COLUMN last_seen TEXT")
+            if "occurrence_count" not in event_cols:
+                cursor.execute("ALTER TABLE events ADD COLUMN occurrence_count INTEGER DEFAULT 1")
+            if "status" not in event_cols:
+                cursor.execute("ALTER TABLE events ADD COLUMN status TEXT DEFAULT 'ACTIVE'")
 
             # 9. Incidents
             cursor.execute("""
@@ -166,11 +181,23 @@ class DatabaseManager:
                     status TEXT,
                     root_event_id TEXT,
                     correlated_event_ids TEXT,
+                    event_count INTEGER DEFAULT 1,
+                    occurrence_count INTEGER DEFAULT 1,
                     confidence TEXT,
+                    facts TEXT,
                     summary TEXT,
                     llm_status TEXT
                 )
             """)
+
+            # Schema migration for incidents
+            inc_cols = [c[1] for c in cursor.execute("PRAGMA table_info(incidents)").fetchall()]
+            if "event_count" not in inc_cols:
+                cursor.execute("ALTER TABLE incidents ADD COLUMN event_count INTEGER DEFAULT 1")
+            if "occurrence_count" not in inc_cols:
+                cursor.execute("ALTER TABLE incidents ADD COLUMN occurrence_count INTEGER DEFAULT 1")
+            if "facts" not in inc_cols:
+                cursor.execute("ALTER TABLE incidents ADD COLUMN facts TEXT")
 
             # 10. Alerts
             cursor.execute("""
@@ -251,28 +278,72 @@ class DatabaseManager:
             """, (m.timestamp, m.device_id, m.destination, m.gateway, int(m.active), m.distance, m.routing_table))
             conn.commit()
 
-    def insert_event(self, e: EventRecord) -> None:
+    def get_active_event_by_fingerprint(self, device_id: str, fingerprint: str) -> Optional[Dict[str, Any]]:
         with self.get_connection() as conn:
-            conn.execute("""
-                INSERT OR IGNORE INTO events (event_id, device_id, timestamp, type, severity, source, entity, evidence, fingerprint)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (e.event_id, e.device_id, e.timestamp, e.type, e.severity, e.source, e.entity, json.dumps(e.evidence), e.fingerprint))
+            row = conn.execute("""
+                SELECT * FROM events WHERE device_id = ? AND fingerprint = ? AND status = 'ACTIVE' ORDER BY timestamp DESC LIMIT 1
+            """, (device_id, fingerprint)).fetchone()
+            if not row:
+                return None
+            d = dict(row)
+            if d.get("evidence"):
+                try:
+                    d["evidence"] = json.loads(d["evidence"])
+                except Exception:
+                    pass
+            return d
+
+    def upsert_active_event(self, e: EventRecord) -> str:
+        """
+        Deduplicates events cleanly:
+        If an ACTIVE event with matching fingerprint exists, updates last_seen, occurrence_count (+1), and evidence in-place.
+        Otherwise, inserts a new event row. Returns event_id.
+        """
+        existing = self.get_active_event_by_fingerprint(e.device_id, e.fingerprint)
+        with self.get_connection() as conn:
+            if existing:
+                evt_id = existing["event_id"]
+                new_occ = existing.get("occurrence_count", 1) + 1
+                conn.execute("""
+                    UPDATE events SET
+                        last_seen = ?,
+                        occurrence_count = ?,
+                        evidence = ?,
+                        status = ?
+                    WHERE event_id = ?
+                """, (e.last_seen, new_occ, json.dumps(e.evidence), e.status, evt_id))
+                conn.commit()
+                return evt_id
+            else:
+                conn.execute("""
+                    INSERT INTO events (event_id, device_id, timestamp, first_seen, last_seen, occurrence_count, status, type, severity, source, entity, evidence, fingerprint)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (e.event_id, e.device_id, e.timestamp, e.first_seen, e.last_seen, e.occurrence_count, e.status, e.type, e.severity, e.source, e.entity, json.dumps(e.evidence), e.fingerprint))
+                conn.commit()
+                return e.event_id
+
+    def update_event_status(self, event_id: str, status: str) -> None:
+        with self.get_connection() as conn:
+            conn.execute("UPDATE events SET status = ? WHERE event_id = ?", (status, event_id))
             conn.commit()
 
     def upsert_incident(self, inc: IncidentRecord) -> None:
         with self.get_connection() as conn:
             conn.execute("""
-                INSERT INTO incidents (incident_id, device_id, created_at, updated_at, severity, status, root_event_id, correlated_event_ids, confidence, summary, llm_status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO incidents (incident_id, device_id, created_at, updated_at, severity, status, root_event_id, correlated_event_ids, event_count, occurrence_count, confidence, facts, summary, llm_status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(incident_id) DO UPDATE SET
                     updated_at=excluded.updated_at,
                     severity=excluded.severity,
                     status=excluded.status,
                     correlated_event_ids=excluded.correlated_event_ids,
+                    event_count=excluded.event_count,
+                    occurrence_count=excluded.occurrence_count,
                     confidence=excluded.confidence,
+                    facts=excluded.facts,
                     summary=excluded.summary,
                     llm_status=excluded.llm_status
-            """, (inc.incident_id, inc.device_id, inc.created_at, inc.updated_at, inc.severity, inc.status, inc.root_event_id, json.dumps(inc.correlated_event_ids), inc.confidence, inc.summary, inc.llm_status))
+            """, (inc.incident_id, inc.device_id, inc.created_at, inc.updated_at, inc.severity, inc.status, inc.root_event_id, json.dumps(inc.correlated_event_ids), inc.event_count, inc.occurrence_count, inc.confidence, json.dumps(inc.facts), inc.summary, inc.llm_status))
             conn.commit()
 
     # --- QUERY METHODS FOR BASELINE & API ---
@@ -368,7 +439,7 @@ class DatabaseManager:
     def get_open_incident_by_fingerprint(self, device_id: str, fingerprint: str) -> Optional[Dict[str, Any]]:
         with self.get_connection() as conn:
             rows = conn.execute("""
-                SELECT * FROM incidents WHERE device_id = ? AND status != 'RESOLVED' ORDER BY created_at DESC
+                SELECT * FROM incidents WHERE device_id = ? AND status IN ('OPEN', 'ACKNOWLEDGED') ORDER BY created_at DESC
             """, (device_id,)).fetchall()
             for r in rows:
                 d = dict(r)
@@ -395,6 +466,11 @@ class DatabaseManager:
                         d["correlated_event_ids"] = json.loads(d["correlated_event_ids"])
                     except Exception:
                         pass
+                if d.get("facts"):
+                    try:
+                        d["facts"] = json.loads(d["facts"])
+                    except Exception:
+                        pass
                 res.append(d)
             return res
 
@@ -407,6 +483,11 @@ class DatabaseManager:
             if d.get("correlated_event_ids"):
                 try:
                     d["correlated_event_ids"] = json.loads(d["correlated_event_ids"])
+                except Exception:
+                    pass
+            if d.get("facts"):
+                try:
+                    d["facts"] = json.loads(d["facts"])
                 except Exception:
                     pass
             return d

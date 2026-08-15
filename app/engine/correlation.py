@@ -63,6 +63,7 @@ def calculate_incident_severity(events: List[EventRecord]) -> str:
 def generate_llm_incident_summary(incident: IncidentRecord, root_event: EventRecord, correlated_events: List[EventRecord]) -> Tuple[str, str]:
     """
     Executes SINGLE OpenRouter LLM call to summarize incident deterministically.
+    Rule 9: LLM receives immutable deterministic facts and MUST NOT alter numerical facts or counts.
     Returns (summary_text, llm_status: 'SUCCESS' or 'FAILED').
     """
     try:
@@ -73,20 +74,24 @@ def generate_llm_incident_summary(incident: IncidentRecord, root_event: EventRec
             "incident_id": incident.incident_id,
             "device_id": incident.device_id,
             "severity": incident.severity,
+            "status": incident.status,
+            "event_count": incident.event_count,
+            "occurrence_count": incident.occurrence_count,
+            "facts": incident.facts,
             "root_cause_event": root_event.model_dump(),
             "correlated_events": [e.model_dump() for e in correlated_events],
         }
 
         sys_prompt = (
             "You are an ISP NOC AIOps engineer.\n"
-            "Summarize the correlated network incident based ONLY on supplied deterministic evidence.\n"
-            "Do not invent topology, events, or severity.\n"
+            "Summarize the correlated network incident based ONLY on supplied deterministic evidence and immutable facts.\n"
+            "Do not invent topology, event counts, occurrence counts, timestamps, or severity.\n"
             "Explain the root cause and impact in 2-3 concise bullet points."
         )
 
         messages = [
             SystemMessage(content=sys_prompt),
-            HumanMessage(content=f"Incident Evidence:\n{json.dumps(prompt_payload, indent=2)}"),
+            HumanMessage(content=f"Deterministic Incident Evidence:\n{json.dumps(prompt_payload, indent=2)}"),
         ]
 
         logger.info(f"Generating LLM summary for incident {incident.incident_id}...")
@@ -96,15 +101,15 @@ def generate_llm_incident_summary(incident: IncidentRecord, root_event: EventRec
     except Exception as e:
         logger.error(f"OpenRouter LLM incident summary generation failed: {e}")
         fallback_summary = (
-            f"Incident {incident.incident_id} created for {incident.device_id}. "
-            f"Deterministic Root Cause: {root_event.type} on {root_event.entity}. "
-            f"Correlated Events Count: {len(correlated_events)}."
+            f"Incident {incident.incident_id} for {incident.device_id}. "
+            f"Root Cause: {root_event.type} on {root_event.entity}. "
+            f"Distinct Event Types: {incident.event_count}, Cumulative Occurrences: {incident.occurrence_count}."
         )
         return fallback_summary, "FAILED"
 
 
 class CorrelationEngine:
-    """Correlates events, manages incidents, performs deduplication, and handles recovery."""
+    """Correlates events, manages incidents, performs in-place deduplication, and handles recovery."""
 
     @staticmethod
     def process_events(events: List[EventRecord]) -> None:
@@ -112,47 +117,56 @@ class CorrelationEngine:
             return
 
         for event in events:
-            # 1. Store event in DB
-            db.insert_event(event)
-
-            # 2. Check if recovery event
+            # 1. Check if recovery event
             if "RECOVERED" in event.type:
                 CorrelationEngine._handle_recovery_event(event)
                 continue
 
-            # 3. Correlate anomaly event into Incident
+            # 2. Upsert active event in DB (in-place deduplication: updates last_seen & occurrence_count)
+            actual_event_id = db.upsert_active_event(event)
+            if isinstance(actual_event_id, str):
+                event.event_id = actual_event_id
+
+            # 3. Correlate active event into Incident
             CorrelationEngine._correlate_anomaly_event(event)
 
     @staticmethod
     def _handle_recovery_event(recovery_event: EventRecord) -> None:
-        """Handles recovery event by marking corresponding open incident as RESOLVED."""
+        """Handles recovery event by marking corresponding active event RECOVERED and incident CLOSED."""
         device_id = recovery_event.device_id
         entity = recovery_event.entity
-        base_type = recovery_event.type.replace("_RECOVERED", "_DOWN")
+        base_type = recovery_event.type.replace("_RECOVERED", "_DOWN").replace("_RECOVERED", "_DROP")
 
-        target_fingerprint = f"{device_id}:{base_type}:{entity}"
-        open_inc = db.get_open_incident_by_fingerprint(device_id, target_fingerprint)
+        # Mark matching active event as RECOVERED
+        active_evt = db.get_active_event_by_fingerprint(device_id, f"{device_id}:{base_type}:{entity}")
+        if active_evt:
+            db.update_event_status(active_evt["event_id"], "RECOVERED")
+
+        open_inc = db.get_open_incident_by_fingerprint(device_id, f"{device_id}:{base_type}:{entity}")
 
         if open_inc:
-            logger.info(f"Recovery event {recovery_event.type} detected for {entity}. Resolving incident {open_inc['incident_id']}...")
+            logger.info(f"Recovery event {recovery_event.type} detected for {entity}. Closing incident {open_inc['incident_id']}...")
             inc_record = IncidentRecord(
                 incident_id=open_inc["incident_id"],
                 device_id=open_inc["device_id"],
                 created_at=open_inc["created_at"],
                 updated_at=current_utc_timestamp(),
                 severity=open_inc["severity"],
-                status="RESOLVED",
+                status="CLOSED",
                 root_event_id=open_inc["root_event_id"],
                 correlated_event_ids=json.loads(open_inc["correlated_event_ids"]) if isinstance(open_inc["correlated_event_ids"], str) else open_inc["correlated_event_ids"],
+                event_count=open_inc.get("event_count", 1),
+                occurrence_count=open_inc.get("occurrence_count", 1),
                 confidence=open_inc["confidence"],
-                summary=open_inc["summary"] + "\n\n[RECOVERY DETECTED]: All correlated metric parameters restored to normal operational thresholds.",
+                facts=json.loads(open_inc["facts"]) if isinstance(open_inc.get("facts"), str) else open_inc.get("facts", {}),
+                summary=(open_inc.get("summary") or "") + "\n\n[RECOVERY DETECTED]: Fault recovered. Incident CLOSED.",
                 llm_status=open_inc["llm_status"]
             )
             db.upsert_incident(inc_record)
 
     @staticmethod
     def _correlate_anomaly_event(event: EventRecord) -> None:
-        """Correlates anomaly event into existing open incident within correlation window or creates new incident."""
+        """Correlates active anomaly event into existing open incident within correlation window or creates new incident."""
         device_id = event.device_id
         open_incidents = db.get_incidents(limit=10, status="OPEN")
         matching_inc = None
@@ -164,7 +178,6 @@ class CorrelationEngine:
                 break
 
         if matching_inc:
-            # Correlate into existing incident
             corr_ids = matching_inc.get("correlated_event_ids", [])
             if isinstance(corr_ids, str):
                 corr_ids = json.loads(corr_ids)
@@ -174,13 +187,27 @@ class CorrelationEngine:
 
             # Retrieve full event objects
             event_objs: List[EventRecord] = []
+            cum_occurrences = 0
             for eid in corr_ids:
                 edata = db.get_event_by_id(eid)
                 if edata:
-                    event_objs.append(EventRecord(**edata))
+                    e_rec = EventRecord(**edata)
+                    event_objs.append(e_rec)
+                    cum_occurrences += e_rec.occurrence_count
 
             root_e = determine_root_event(event_objs)
             sev = calculate_incident_severity(event_objs)
+
+            facts = {
+                "device_id": device_id,
+                "entity": root_e.entity,
+                "event_type": root_e.type,
+                "severity": sev,
+                "occurrence_count": cum_occurrences,
+                "first_seen": root_e.first_seen,
+                "last_seen": root_e.last_seen,
+                "evidence": root_e.evidence
+            }
 
             inc_obj = IncidentRecord(
                 incident_id=matching_inc["incident_id"],
@@ -191,7 +218,10 @@ class CorrelationEngine:
                 status="OPEN",
                 root_event_id=root_e.event_id,
                 correlated_event_ids=corr_ids,
+                event_count=len(corr_ids),
+                occurrence_count=cum_occurrences,
                 confidence="HIGH",
+                facts=facts,
                 summary=matching_inc.get("summary"),
                 llm_status=matching_inc.get("llm_status", "SUCCESS")
             )
@@ -202,12 +232,23 @@ class CorrelationEngine:
             inc_obj.llm_status = llm_status
 
             db.upsert_incident(inc_obj)
-            logger.info(f"Correlated event {event.type} ({event.entity}) into existing incident {inc_obj.incident_id}.")
+            logger.info(f"Correlated active event {event.type} ({event.entity}) into existing incident {inc_obj.incident_id} (Occurrences={cum_occurrences}).")
         else:
             # Create new Incident
             inc_id = str(uuid.uuid4())
             event_objs = [event]
             sev = calculate_incident_severity(event_objs)
+
+            facts = {
+                "device_id": device_id,
+                "entity": event.entity,
+                "event_type": event.type,
+                "severity": sev,
+                "occurrence_count": event.occurrence_count,
+                "first_seen": event.first_seen,
+                "last_seen": event.last_seen,
+                "evidence": event.evidence
+            }
 
             inc_obj = IncidentRecord(
                 incident_id=inc_id,
@@ -218,7 +259,10 @@ class CorrelationEngine:
                 status="OPEN",
                 root_event_id=event.event_id,
                 correlated_event_ids=[event.event_id],
+                event_count=1,
+                occurrence_count=event.occurrence_count,
                 confidence="HIGH",
+                facts=facts,
                 summary=None,
                 llm_status="SUCCESS"
             )

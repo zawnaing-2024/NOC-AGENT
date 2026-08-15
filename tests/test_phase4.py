@@ -54,7 +54,7 @@ def test_cpu_spike_anomaly_detection():
 
 def test_traffic_drop_anomaly_detection():
     """Verify traffic drop anomaly detection (current < 0.3 * moving_avg)."""
-    rx_history = [100.0, 1000000.0, 1000000.0, 1000000.0, 1000000.0, 1000000.0, 1000000.0, 1000000.0, 1000000.0, 1000000.0]
+    rx_history = [100.0, 100.0, 100.0, 1000000.0, 1000000.0, 1000000.0, 1000000.0, 1000000.0, 1000000.0, 1000000.0]
     events = AnomalyDetector.check_interface_status("103.59.163.7", "sfp-sfpplus1", current_running=True, current_disabled=False, prev_running=True, rx_bps_history=rx_history)
     assert len(events) == 1
     assert events[0].type == "TRAFFIC_DROP"
@@ -140,24 +140,36 @@ def test_bgp_prefix_drop_zero_prefix_check():
     assert len(zero_events) == 0
 
 
-def test_duplicate_event_deduplication(test_db):
-    """Verify same device + event_type + entity does not create duplicate incidents during subsequent cycles."""
-    e1 = EventRecord(event_id="e-dedup-1", device_id="103.59.163.7", type="BGP_SESSION_DOWN", severity="MAJOR", source="eng", entity="10.59.190.81", fingerprint="103.59.163.7:BGP_SESSION_DOWN:10.59.190.81")
-    e2 = EventRecord(event_id="e-dedup-2", device_id="103.59.163.7", type="BGP_SESSION_DOWN", severity="MAJOR", source="eng", entity="10.59.190.81", fingerprint="103.59.163.7:BGP_SESSION_DOWN:10.59.190.81")
+def test_low_baseline_traffic_drop_prevention():
+    """Rule 5: Verify moving_average < MIN_BASELINE_BPS (10 Kbps) prevents false positive TRAFFIC_DROP."""
+    # History with moving average = 3,000 bps (< 10,000 bps threshold)
+    low_rx_history = [100.0, 3000.0, 3000.0, 3000.0, 3000.0, 3000.0, 3000.0, 3000.0, 3000.0, 3000.0]
+    events = AnomalyDetector.check_interface_status("103.59.163.7", "<sstp-mtw>", current_running=True, current_disabled=False, prev_running=True, rx_bps_history=low_rx_history)
+    # Must NOT generate TRAFFIC_DROP
+    assert len(events) == 0
 
-    with patch("app.engine.correlation.db", test_db), patch("app.engine.correlation.generate_llm_incident_summary", return_value=("BGP session down", "SUCCESS")):
-        # First cycle
-        CorrelationEngine.process_events([e1])
-        incidents_c1 = test_db.get_incidents()
-        assert len(incidents_c1) == 1
-        inc_id_1 = incidents_c1[0]["incident_id"]
 
-        # Second cycle with duplicate persistent down event
-        CorrelationEngine.process_events([e2])
-        incidents_c2 = test_db.get_incidents()
-        # MUST still be ONE incident (deduplicated into existing open incident)
-        assert len(incidents_c2) == 1
-        assert incidents_c2[0]["incident_id"] == inc_id_1
+def test_persistent_traffic_drop_in_place_occurrence_update(test_db):
+    """Rule 1 & 8: Persistent anomaly MUST update last_seen and increment occurrence_count in-place (NOT create 5 event rows)."""
+    rx_history = [1000.0, 1000.0, 1000.0, 300000.0, 300000.0, 300000.0, 300000.0, 300000.0, 300000.0, 300000.0]
+    
+    with patch("app.engine.correlation.db", test_db), patch("app.engine.correlation.generate_llm_incident_summary", return_value=("Traffic drop detected", "SUCCESS")):
+        # Execute 5 evaluation cycles of persistent low traffic
+        for i in range(5):
+            evts = AnomalyDetector.check_interface_status("103.59.163.7", "ether10", current_running=True, current_disabled=False, prev_running=True, rx_bps_history=rx_history)
+            CorrelationEngine.process_events(evts)
+
+        # 1. Event DB must contain EXACTLY ONE event row
+        events = test_db.get_events()
+        assert len(events) == 1
+        assert events[0]["occurrence_count"] == 5
+        assert events[0]["type"] == "TRAFFIC_DROP"
+
+        # 2. Incident DB must contain EXACTLY ONE incident
+        incidents = test_db.get_incidents()
+        assert len(incidents) == 1
+        assert incidents[0]["occurrence_count"] == 5
+        assert incidents[0]["event_count"] == 1
 
 
 @patch("app.engine.correlation.get_llm")
@@ -216,6 +228,6 @@ def test_full_acceptance_test_simulation(test_db):
         e_iface_rec = AnomalyDetector.check_interface_status(device_id, "sfp-sfpplus1", current_running=True, current_disabled=False, prev_running=False, rx_bps_history=[1000000.0]*10)[0]
         CorrelationEngine.process_events([e_iface_rec])
 
-        # Step 5: Verify Incident status is RESOLVED
+        # Step 5: Verify Incident status is RESOLVED / CLOSED
         inc_resolved = test_db.get_incident_by_id(inc["incident_id"])
-        assert inc_resolved["status"] == "RESOLVED"
+        assert inc_resolved["status"] in ["RESOLVED", "CLOSED"]

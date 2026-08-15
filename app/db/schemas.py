@@ -90,6 +90,10 @@ class EventRecord(BaseModel):
     event_id: str = Field(..., description="Unique UUID event identifier")
     device_id: str
     timestamp: str = Field(default_factory=current_utc_timestamp)
+    first_seen: str = Field(default_factory=current_utc_timestamp)
+    last_seen: str = Field(default_factory=current_utc_timestamp)
+    occurrence_count: int = Field(default=1, description="Number of times anomaly persisted across collection cycles")
+    status: str = Field(default="ACTIVE", description="ACTIVE, RECOVERED, ACKNOWLEDGED, CLOSED")
     type: str = Field(..., description="Anomaly type (e.g. CPU_SPIKE, INTERFACE_DOWN)")
     severity: str = Field(default="WARNING", description="Severity: INFO, WARNING, MINOR, MAJOR, CRITICAL")
     source: str = Field(default="deterministic_engine")
@@ -104,10 +108,13 @@ class IncidentRecord(BaseModel):
     created_at: str = Field(default_factory=current_utc_timestamp)
     updated_at: str = Field(default_factory=current_utc_timestamp)
     severity: str = Field(default="MAJOR")
-    status: str = Field(default="OPEN", description="OPEN, ACKNOWLEDGED, RESOLVED")
+    status: str = Field(default="OPEN", description="OPEN, ACKNOWLEDGED, RESOLVED, CLOSED")
     root_event_id: str
     correlated_event_ids: List[str] = Field(default_factory=list)
+    event_count: int = Field(default=1, description="Distinct event types correlated in this incident")
+    occurrence_count: int = Field(default=1, description="Cumulative occurrences of persistent anomalies")
     confidence: str = Field(default="HIGH")
+    facts: Dict[str, Any] = Field(default_factory=dict)
     summary: Optional[str] = None
     llm_status: str = Field(default="SUCCESS", description="SUCCESS or FAILED")
 

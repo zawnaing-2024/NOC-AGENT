@@ -4,6 +4,7 @@ import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone
 
+from app.config import settings
 from app.db.schemas import EventRecord
 from app.engine.baseline import calculate_baseline, BaselineResult
 from app.db.database import db
@@ -313,9 +314,20 @@ class AnomalyDetector:
         # Traffic Drop & Spike Rules (Baseline requirement >= 10 samples)
         if rx_bps_history and current_running:
             tr_bl = calculate_baseline(rx_bps_history, min_samples=10)
-            if tr_bl.baseline_status == "NORMAL" and tr_bl.moving_average > 1000.0:
+            
+            # Rule 5: Low Traffic Interfaces Protection
+            # Do NOT create TRAFFIC_DROP if baseline moving average is below MIN_BASELINE_BPS (10 Kbps)
+            # or if the interface is dynamic/tunnel/PPP/VPN with low traffic.
+            if tr_bl.baseline_status == "NORMAL" and tr_bl.moving_average >= settings.MIN_BASELINE_BPS:
                 current_bps = rx_bps_history[0]
-                if current_bps < (tr_bl.moving_average * 0.3):
+                drop_pct = (1.0 - (current_bps / tr_bl.moving_average)) * 100.0 if tr_bl.moving_average > 0 else 0.0
+                
+                # Rule 4: Persistence requirement (consecutive samples below threshold)
+                p_samples = min(len(rx_bps_history), settings.PERSISTENCE_SAMPLES)
+                recent_samples = rx_bps_history[:p_samples]
+                is_persistent_low = all(s < (tr_bl.moving_average * (1.0 - (settings.TRAFFIC_DROP_PERCENT / 100.0))) for s in recent_samples)
+
+                if drop_pct >= settings.TRAFFIC_DROP_PERCENT and is_persistent_low:
                     fp = generate_fingerprint(device_id, "TRAFFIC_DROP", interface_name)
                     events.append(EventRecord(
                         event_id=str(uuid.uuid4()),
@@ -327,8 +339,9 @@ class AnomalyDetector:
                         evidence={
                             "current_bps": current_bps,
                             "moving_average_bps": round(tr_bl.moving_average, 2),
-                            "drop_percentage": round((1.0 - (current_bps / tr_bl.moving_average)) * 100.0, 1),
-                            "sample_count": tr_bl.sample_count
+                            "drop_percentage": round(drop_pct, 1),
+                            "sample_count": tr_bl.sample_count,
+                            "persistence_samples": p_samples
                         },
                         fingerprint=fp
                     ))
