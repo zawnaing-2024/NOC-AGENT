@@ -11,6 +11,19 @@ from app.ai.agent import AIAgentService
 logger = logging.getLogger("mikrotik_noc_agent.investigator")
 
 
+def format_bandwidth(bps: float) -> str:
+    """Formats numeric bits-per-second into human-readable Gbps, Mbps, Kbps, or bps."""
+    val = float(bps or 0.0)
+    if val >= 1_000_000_000:
+        return f"{val / 1_000_000_000:.2f} Gbps"
+    elif val >= 1_000_000:
+        return f"{val / 1_000_000:.2f} Mbps"
+    elif val >= 1_000:
+        return f"{val / 1_000:.1f} Kbps"
+    else:
+        return f"{val:.0f} bps"
+
+
 class DeepNocInvestigator:
     """
     Phase 6 Deterministic Deep NOC Investigation Engine.
@@ -125,7 +138,7 @@ class DeepNocInvestigator:
             evidence.append({
                 "fact": f"Interface {entity} Bandwidth Rate",
                 "parameter": "RX / TX Rate",
-                "observed_value": f"RX: {round(target_if.get('rx_bps', 0)/1000, 1)} Kbps, TX: {round(target_if.get('tx_bps', 0)/1000, 1)} Kbps",
+                "observed_value": f"RX: {format_bandwidth(target_if.get('rx_bps', 0))}, TX: {format_bandwidth(target_if.get('tx_bps', 0))}",
                 "baseline_value": "> Moving Average",
                 "timestamp": target_if.get("timestamp", "recent"),
                 "source": "RouterOS API /interface/monitor-traffic",

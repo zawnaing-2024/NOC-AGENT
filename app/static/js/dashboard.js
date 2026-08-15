@@ -79,6 +79,20 @@ document.addEventListener('DOMContentLoaded', () => {
     else if (currentTab === 'incidents') renderIncidentsView(viewContainer);
   }
 
+  function formatBandwidth(bps) {
+    if (bps === null || bps === undefined || isNaN(bps)) return '0 bps';
+    const val = Number(bps);
+    if (val >= 1000000000) {
+      return (val / 1000000000).toFixed(2) + ' Gbps';
+    } else if (val >= 1000000) {
+      return (val / 1000000).toFixed(2) + ' Mbps';
+    } else if (val >= 1000) {
+      return (val / 1000).toFixed(1) + ' Kbps';
+    } else {
+      return val.toFixed(0) + ' bps';
+    }
+  }
+
   // View Renderers
   async function renderDashboardView(container) {
     const [devs, ifaces, bgp, ospf, incs] = await Promise.all([
@@ -90,6 +104,9 @@ document.addEventListener('DOMContentLoaded', () => {
     ]);
 
     const activeIncs = (incs.incidents || []).filter(i => i.status !== 'RESOLVED' && i.status !== 'CLOSED');
+    const interfaceList = ifaces.interfaces || [];
+    const totalRx = interfaceList.reduce((acc, curr) => acc + (curr.rx_bps || 0), 0);
+    const totalTx = interfaceList.reduce((acc, curr) => acc + (curr.tx_bps || 0), 0);
 
     container.innerHTML = `
       <div class="kpi-grid">
@@ -100,11 +117,16 @@ document.addEventListener('DOMContentLoaded', () => {
         </div>
         <div class="kpi-card">
           <div class="kpi-title">Interfaces</div>
-          <div class="kpi-value">${ifaces.interfaces.length}</div>
+          <div class="kpi-value">${interfaceList.length}</div>
           <div class="kpi-sub">
-            <span style="color:var(--status-green)">UP: ${ifaces.interfaces.filter(i=>i.status==='UP').length}</span>
-            <span style="color:var(--status-red)">DOWN: ${ifaces.interfaces.filter(i=>i.status==='DOWN').length}</span>
+            <span style="color:var(--status-green)">UP: ${interfaceList.filter(i=>i.status==='UP').length}</span>
+            <span style="color:var(--status-red)">DOWN: ${interfaceList.filter(i=>i.status==='DOWN').length}</span>
           </div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-title">Aggregate Traffic</div>
+          <div class="kpi-value" style="font-size:20px; color:var(--accent-blue);">RX: ${formatBandwidth(totalRx)}</div>
+          <div class="kpi-sub"><span style="color:var(--text-main)">TX: ${formatBandwidth(totalTx)}</span></div>
         </div>
         <div class="kpi-card">
           <div class="kpi-title">BGP Sessions</div>
