@@ -10,7 +10,7 @@ from app.tools.routeros import (
     parse_interface_logs,
     parse_interface_traffic,
 )
-from app.agent import perform_evidence_driven_investigation
+from app.agent import perform_cross_domain_investigation
 
 
 def test_get_interface_detail_success():
@@ -105,7 +105,7 @@ def test_get_interface_traffic():
 
 
 @patch("app.agent.get_routeros_client")
-def test_perform_evidence_driven_investigation_flow(mock_get_client):
+def test_perform_cross_domain_investigation_flow(mock_get_client):
     mock_api = MagicMock()
     mock_api.path.side_effect = lambda path: [
         {
@@ -121,7 +121,7 @@ def test_perform_evidence_driven_investigation_flow(mock_get_client):
     ]
     mock_get_client.return_value.__enter__.return_value = mock_api
 
-    evidence_text, tools_used = perform_evidence_driven_investigation("Investigate the link down interface")
+    evidence_text, tools_used = perform_cross_domain_investigation("Investigate the link down interface")
 
     # Verify tool sequence and targeted investigation of ether8
     assert "get_interfaces" in tools_used

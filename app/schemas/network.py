@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Optional, Dict, Union
 from pydantic import BaseModel, Field
 
 
@@ -48,8 +48,6 @@ class InterfacesResponse(BaseModel):
     details: Optional[List[InterfaceInfo]] = None
 
 
-# --- MVP-2 Single Interface Targeted Investigation Schemas ---
-
 class InterfaceDetail(BaseModel):
     name: str = Field(..., description="Target interface name")
     type: str = Field(default="ether", description="Interface type")
@@ -91,28 +89,89 @@ class InterfaceTrafficResponse(BaseModel):
     tx_drops: int = Field(default=0, description="Current transmit drop count")
 
 
+# --- Phase 3 Cross-Domain Troubleshooting Schemas ---
+
 class BgpPeerInfo(BaseModel):
     name: str = Field(..., description="BGP peer session name")
     remote_address: str = Field(default="unknown", description="Remote peer IP address")
     local_address: str = Field(default="", description="Local IP address")
-    state: str = Field(default="unknown", description="BGP session state (e.g. established, connect)")
-    uptime: str = Field(default="", description="BGP peer uptime")
+    state: str = Field(default="unknown", description="BGP session state (e.g. established, idle)")
+    uptime: Optional[str] = Field(default=None, description="BGP peer uptime")
     established: bool = Field(default=False, description="Whether BGP session is established")
     prefix_count: int = Field(default=0, description="Number of prefixes received/advertised")
-    remote_as: str = Field(default="", description="Remote Autonomous System Number")
-    local_as: str = Field(default="", description="Local Autonomous System Number")
+    remote_as: Optional[str] = Field(default=None, description="Remote Autonomous System Number")
+    local_as: Optional[str] = Field(default=None, description="Local Autonomous System Number")
 
 
 class BgpSummary(BaseModel):
     total: int = Field(default=0)
     established: int = Field(default=0)
     down: int = Field(default=0)
-    down_peers: List[str] = Field(default_factory=list, description="Names of non-established BGP peers")
+    down_peers: List[str] = Field(default_factory=list, description="Names/IPs of non-established BGP peers")
 
 
 class BgpPeersResponse(BaseModel):
     summary: BgpSummary
     details: Optional[List[BgpPeerInfo]] = None
+
+
+class StaticRouteInfo(BaseModel):
+    destination: str = Field(..., description="Destination CIDR prefix")
+    gateway: str = Field(..., description="Gateway IP or interface")
+    interface: Optional[str] = Field(default=None, description="Egress interface")
+    distance: int = Field(default=1, description="Route administrative distance")
+    active: bool = Field(default=True, description="Whether route is active in RIB")
+    disabled: bool = Field(default=False, description="Whether route is administratively disabled")
+
+
+class StaticRoutesResponse(BaseModel):
+    total: int = Field(default=0)
+    active: int = Field(default=0)
+    inactive: int = Field(default=0)
+    disabled: int = Field(default=0)
+    inactive_routes: List[str] = Field(default_factory=list)
+    routes: Optional[List[StaticRouteInfo]] = None
+
+
+class OspfNeighborInfo(BaseModel):
+    neighbor: str = Field(..., description="Neighbor IP address")
+    router_id: str = Field(default="unknown", description="Neighbor Router ID")
+    state: str = Field(default="unknown", description="Adjacency state (e.g. Full, Down, Init, 2-Way)")
+    interface: str = Field(default="unknown", description="Local interface connected to neighbor")
+    uptime: str = Field(default="unknown", description="Adjacency uptime")
+
+
+class OspfNeighborsResponse(BaseModel):
+    total: int = Field(default=0)
+    full: int = Field(default=0)
+    down: int = Field(default=0)
+    down_neighbors: List[str] = Field(default_factory=list)
+    neighbors: Optional[List[OspfNeighborInfo]] = None
+
+
+class NatRuleInfo(BaseModel):
+    rule_id: str = Field(..., description="Rule ID or index")
+    chain: str = Field(default="srcnat", description="NAT chain (srcnat/dstnat)")
+    action: str = Field(default="masquerade", description="NAT action (masquerade/src-nat/dst-nat)")
+    src_address: Optional[str] = Field(default=None, description="Source address")
+    dst_address: Optional[str] = Field(default=None, description="Destination address")
+    out_interface: Optional[str] = Field(default=None, description="Outbound interface")
+    packets: int = Field(default=0, description="Matched packet count")
+    bytes: int = Field(default=0, description="Matched byte count")
+    disabled: bool = Field(default=False, description="Whether rule is disabled")
+
+
+class NatRulesResponse(BaseModel):
+    total: int = Field(default=0)
+    active: int = Field(default=0)
+    disabled: int = Field(default=0)
+    zero_counter_rules: List[str] = Field(default_factory=list)
+    rules: Optional[List[NatRuleInfo]] = None
+
+
+class RoutingLogsResponse(BaseModel):
+    filter_text: Optional[str] = Field(default=None)
+    events: List[LogEvent] = Field(default_factory=list)
 
 
 class TokenUsage(BaseModel):
