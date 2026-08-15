@@ -71,88 +71,38 @@ TOOLS = [
 TOOL_MAP = {tool.name: tool for tool in TOOLS}
 
 SYSTEM_PROMPT = """You are an ISP NOC engineer.
-Analyze only supplied evidence.
+
+Use only supplied evidence.
+Never invent facts.
 Separate facts from hypotheses.
-Never invent network state.
-Never claim a root cause without supporting evidence.
-Never infer topology or interface role unless explicitly provided.
-If evidence is insufficient, say INSUFFICIENT_EVIDENCE.
-Do not claim customer or service impact without evidence.
-Prefer the simplest explanation supported by multiple independent evidence points.
+Do not infer topology without evidence.
+Do not force an RCA.
+Use NO_ANOMALY for healthy systems.
+Use INSUFFICIENT_EVIDENCE when evidence is insufficient.
+Do not claim service impact without evidence.
+Return a concise NOC assessment.
 
-RCA CLASSIFICATION CATEGORIES:
-- NO_ANOMALY: All sessions, interfaces, routes, and neighbors are operating normally with zero detected faults.
-- UNDERLYING_LINK_SUSPECTED: Primary BGP peer, OSPF neighbor, or static route interface is LINK_DOWN / operationally down.
-- NEXT_HOP_UNREACHABLE: Static route gateway or next-hop IP is inactive/unreachable.
-- UPSTREAM_DEPENDENCY: NAT outbound interface or upstream link is down/unreachable.
-- BGP_SESSION_DOWN: BGP peer session is non-established without underlying link down evidence.
-- BGP_SESSION_FLAPPING: BGP peer session repeatedly transitions state (evidenced by log events or reset uptime).
-- BGP_PREFIX_ANOMALY: Unexpected drop to zero received prefixes.
-- OSPF_ADJACENCY_DOWN: OSPF neighbor state is Down without underlying link down evidence.
-- OSPF_ADJACENCY_FLAPPING: OSPF neighbor repeatedly transitions state.
-- ROUTE_INACTIVE: Static route is inactive.
-- ROUTE_MISSING: Expected static/dynamic route absent from routing table.
-- NAT_RULE_DISABLED: NAT rule is administratively disabled.
-- NAT_TRAFFIC_ANOMALY: Active NAT rule matching 0 packets/bytes where traffic expected.
-- EXPECTED_OR_INTENTIONAL_STATE: Item is administratively disabled or in normal standby.
-- INSUFFICIENT_EVIDENCE: Anomaly exists or state representation is uncertain/inconsistent (e.g. established=true with state=UNKNOWN), but evidence is insufficient to determine root cause.
-
-STRICT NOC REPORT RULES:
-
-1. HEALTHY OPERATIONAL RULES:
-   - When all OSPF neighbors are Full or all BGP sessions are established and healthy:
-     - ANOMALIES MUST be: "None detected."
-     - RCA MUST be: "NO_ANOMALY"
-     - RCA_CONFIDENCE MUST be: "HIGH"
-     - Do NOT use EXPECTED_OR_INTENTIONAL_STATE when no anomaly exists!
-     - RECOMMENDED_NEXT_CHECKS: For healthy OSPF/BGP, do not recommend configuration verification. Terminate normally.
-
-2. BGP UNKNOWN STATE RULE:
-   - If established=true and uptime is long, but state=UNKNOWN:
-     - ANOMALIES MUST state: "The normalized state field is UNKNOWN despite the session being established."
-     - RCA MUST be: "INSUFFICIENT_EVIDENCE"
-     - RCA_CONFIDENCE MUST be: "LOW"
-     - RCA explanation MUST state: "The session is established and has a long uptime, but the normalized state field is reported as UNKNOWN. This appears to be an evidence/representation inconsistency rather than evidence of a BGP fault."
-     - You MUST NOT classify state=UNKNOWN with established=true as BGP_SESSION_FLAPPING, BGP_SESSION_DOWN, or configuration failure!
-     - RECOMMENDED_NEXT_CHECKS MUST state: "Validate the normalized state field if needed."
-
-3. CORRELATION & IMPACT DISCIPLINE:
-   - BGP established ONLY proves the BGP session is established. Do NOT say "Layer-3 routing is functioning correctly". Use precise language: "The BGP session is established."
-   - If topology/dependency information is unavailable, IMPACT MUST be: "Service or dependency impact cannot be determined from the available evidence." (Do NOT invent customer, upstream, primary, backup, core, or transit).
-
-Reasoning Output Format:
-Your response MUST strictly follow this 10-section NOC format:
-
+Format:
 OBSERVATION
-<Brief statement of request and diagnostic steps>
+<Concise statement of check>
 
 EVIDENCE
-<Facts and metrics retrieved directly from RouterOS API tool calls>
+<Compact facts from payload>
 
-NORMAL CONDITIONS
-<Healthy system metrics, ACTIVE interfaces, established BGP peers, active routes, Full OSPF neighbors>
-
-ANOMALIES
-<Detected faults or state inconsistencies, or 'None detected.' if fully healthy>
-
-CORRELATION
-<Explicit cross-domain dependency analysis showing how layer-2/interface state affects layer-3 routing/NAT>
+ANOMALY
+<Detected anomaly or 'None detected.'>
 
 RCA
-<RCA Category Name: NO_ANOMALY | INSUFFICIENT_EVIDENCE | UNDERLYING_LINK_SUSPECTED | NEXT_HOP_UNREACHABLE | UPSTREAM_DEPENDENCY | BGP_SESSION_DOWN | OSPF_ADJACENCY_DOWN>
-<Evidence-backed explanation>
+<RCA Category: NO_ANOMALY | INSUFFICIENT_EVIDENCE | UNDERLYING_LINK_SUSPECTED | NEXT_HOP_UNREACHABLE | UPSTREAM_DEPENDENCY | BGP_SESSION_DOWN | OSPF_ADJACENCY_DOWN>
 
-RCA_CONFIDENCE
-<LOW | MEDIUM | HIGH>
+CONFIDENCE
+<HIGH | MEDIUM | LOW>
 
 IMPACT
-<Evidence-backed impact or 'Service or dependency impact cannot be determined from the available evidence.'>
+<Impact statement or 'No anomaly detected.' or 'Service or dependency impact cannot be determined from the available evidence.'>
 
-UNCERTAINTIES
-<Missing info such as peer router status or physical layer test results>
-
-RECOMMENDED_NEXT_CHECKS
-<Read-only troubleshooting checks>
+NEXT_CHECKS
+<Concise next check or 'None required.'>
 """
 
 
@@ -186,14 +136,14 @@ def perform_cross_domain_investigation(user_prompt: str) -> Tuple[str, List[str]
 
 def perform_cross_domain_investigation_profiled(user_prompt: str) -> Tuple[str, List[str], List[ToolCallProfiling], int, int]:
     """
-    Python-driven cross-domain evidence collection & correlation engine with detailed profiling timing metrics.
+    Python-driven cross-domain evidence collection & correlation engine with compact JSON payload optimization.
     Returns (correlated_evidence_text, tools_used_list, tool_profiling_list, intent_ms, correlation_ms).
     """
     t_start = time.perf_counter()
     tools_used: List[str] = []
     tool_profiles: List[ToolCallProfiling] = []
     prompt_lower = user_prompt.lower()
-    evidence_blocks: List[str] = []
+    compact_evidence_dicts: List[Dict[str, Any]] = []
 
     target_host = extract_target_router_host(user_prompt)
     t_intent_end = time.perf_counter()
@@ -201,8 +151,6 @@ def perform_cross_domain_investigation_profiled(user_prompt: str) -> Tuple[str, 
 
     t_corr_start = time.perf_counter()
     with get_routeros_client(host=target_host) as api:
-        if target_host:
-            evidence_blocks.append(f"Target Router Connection: Established connection to Router {target_host}.")
 
         # DOMAIN 1: BGP
         if "bgp" in prompt_lower:
@@ -212,25 +160,37 @@ def perform_cross_domain_investigation_profiled(user_prompt: str) -> Tuple[str, 
             dur_ms = max(1, int((t1 - t0) * 1000))
             tools_used.append("get_bgp_peers")
             tool_profiles.append(ToolCallProfiling(tool="get_bgp_peers", duration_ms=dur_ms, routeros_ms=dur_ms))
-            evidence_blocks.append(f"BGP Session Summary & Details: {bgp_data.model_dump_json(exclude_none=True)}")
 
             down_peers = bgp_data.summary.down_peers
             has_unknown_established = False
+            peer_item = bgp_data.details[0] if bgp_data.details else None
+            
             if bgp_data.details:
                 for p in bgp_data.details:
                     if p.established and p.state == "UNKNOWN":
                         has_unknown_established = True
+                        peer_item = p
 
             if has_unknown_established and not down_peers:
-                evidence_blocks.append(
-                    "PYTHON CORRELATION FINDING: BGP session established=True, but state=UNKNOWN. "
-                    "No flap or reset evidence detected. "
-                    "Classification: INSUFFICIENT_EVIDENCE. "
-                    "Reasoning: The session is established and has a long uptime, but the normalized state field is reported as UNKNOWN. "
-                    "This appears to be an evidence/representation inconsistency rather than evidence of a BGP fault."
-                )
-            elif not down_peers and bgp_data.summary.established > 0 and not has_unknown_established:
-                evidence_blocks.append("PYTHON CORRELATION FINDING: All BGP sessions are established and healthy. Classification: NO_ANOMALY.")
+                compact_evidence_dicts.append({
+                    "domain": "BGP",
+                    "peer": peer_item.remote_address if peer_item else "unknown",
+                    "established": True,
+                    "uptime": peer_item.uptime if peer_item else "long",
+                    "prefix_count": peer_item.prefix_count if peer_item else 1,
+                    "state_field": "UNKNOWN",
+                    "anomaly": "STATE_FIELD_INCONSISTENCY",
+                    "rca_candidate": "INSUFFICIENT_EVIDENCE",
+                    "explanation": "The session is established and has a long uptime, but the normalized state field is reported as UNKNOWN. This appears to be an evidence/representation inconsistency rather than evidence of a BGP fault."
+                })
+            elif not down_peers and bgp_data.summary.established > 0:
+                compact_evidence_dicts.append({
+                    "domain": "BGP",
+                    "established_sessions": bgp_data.summary.established,
+                    "down_sessions": 0,
+                    "anomaly": None,
+                    "rca_candidate": "NO_ANOMALY"
+                })
             elif down_peers:
                 target_peer = down_peers[0]
                 t0 = time.perf_counter()
@@ -239,15 +199,6 @@ def perform_cross_domain_investigation_profiled(user_prompt: str) -> Tuple[str, 
                 dur_ms = max(1, int((t1 - t0) * 1000))
                 tools_used.append("get_bgp_peer_detail")
                 tool_profiles.append(ToolCallProfiling(tool="get_bgp_peer_detail", duration_ms=dur_ms, routeros_ms=dur_ms))
-                evidence_blocks.append(f"Target BGP Peer Detail ({target_peer}): {peer_detail.model_dump_json()}")
-
-                t0 = time.perf_counter()
-                logs_res = parse_routing_logs_data(api, filter_text="bgp")
-                t1 = time.perf_counter()
-                dur_ms = max(1, int((t1 - t0) * 1000))
-                tools_used.append("get_routing_logs")
-                tool_profiles.append(ToolCallProfiling(tool="get_routing_logs", duration_ms=dur_ms, routeros_ms=dur_ms))
-                evidence_blocks.append(f"BGP Routing Logs: {logs_res.model_dump_json()}")
 
                 t0 = time.perf_counter()
                 iface_summary = parse_interfaces_data(api, details=False)
@@ -255,18 +206,19 @@ def perform_cross_domain_investigation_profiled(user_prompt: str) -> Tuple[str, 
                 dur_ms = max(1, int((t1 - t0) * 1000))
                 tools_used.append("get_interfaces")
                 tool_profiles.append(ToolCallProfiling(tool="get_interfaces", duration_ms=dur_ms, routeros_ms=dur_ms))
-                evidence_blocks.append(f"Underlying Interface Summary: {iface_summary.model_dump_json(exclude_none=True)}")
 
-                if iface_summary.summary.link_down > 0:
-                    down_iface = iface_summary.summary.link_down_interfaces[0]
-                    t0 = time.perf_counter()
-                    iface_detail = parse_single_interface_detail(api, down_iface)
-                    t1 = time.perf_counter()
-                    dur_ms = max(1, int((t1 - t0) * 1000))
-                    tools_used.append("get_interface_detail")
-                    tool_profiles.append(ToolCallProfiling(tool="get_interface_detail", duration_ms=dur_ms, routeros_ms=dur_ms))
-                    evidence_blocks.append(f"Cross-Domain Dependency Interface ({down_iface}): {iface_detail.model_dump_json()}")
-                    evidence_blocks.append(f"PYTHON CORRELATION FINDING: BGP peer {target_peer} is DOWN. Underlying interface {down_iface} is LINK_DOWN. Primary RCA Candidate: UNDERLYING_LINK_SUSPECTED.")
+                link_down_iface = iface_summary.summary.link_down_interfaces[0] if iface_summary.summary.link_down > 0 else None
+                rca_cat = "UNDERLYING_LINK_SUSPECTED" if link_down_iface else "BGP_SESSION_DOWN"
+
+                compact_evidence_dicts.append({
+                    "domain": "BGP",
+                    "target_peer": target_peer,
+                    "established": False,
+                    "underlying_interface": link_down_iface,
+                    "interface_state": "LINK_DOWN" if link_down_iface else "ACTIVE",
+                    "anomaly": f"BGP peer {target_peer} DOWN",
+                    "rca_candidate": rca_cat
+                })
 
         # DOMAIN 2: OSPF
         elif "ospf" in prompt_lower or "neighbor" in prompt_lower:
@@ -276,10 +228,16 @@ def perform_cross_domain_investigation_profiled(user_prompt: str) -> Tuple[str, 
             dur_ms = max(1, int((t1 - t0) * 1000))
             tools_used.append("get_ospf_neighbors")
             tool_profiles.append(ToolCallProfiling(tool="get_ospf_neighbors", duration_ms=dur_ms, routeros_ms=dur_ms))
-            evidence_blocks.append(f"OSPF Neighbor Summary & Details: {ospf_data.model_dump_json(exclude_none=True)}")
 
             if ospf_data.down == 0 and ospf_data.total > 0:
-                evidence_blocks.append("PYTHON CORRELATION FINDING: All OSPF neighbors are Full. Classification: NO_ANOMALY.")
+                compact_evidence_dicts.append({
+                    "domain": "OSPF",
+                    "neighbors_total": ospf_data.total,
+                    "full": ospf_data.full,
+                    "down": 0,
+                    "anomaly": None,
+                    "rca_candidate": "NO_ANOMALY"
+                })
             elif ospf_data.down_neighbors:
                 target_nbr = ospf_data.down_neighbors[0]
                 t0 = time.perf_counter()
@@ -288,7 +246,6 @@ def perform_cross_domain_investigation_profiled(user_prompt: str) -> Tuple[str, 
                 dur_ms = max(1, int((t1 - t0) * 1000))
                 tools_used.append("get_ospf_neighbor_detail")
                 tool_profiles.append(ToolCallProfiling(tool="get_ospf_neighbor_detail", duration_ms=dur_ms, routeros_ms=dur_ms))
-                evidence_blocks.append(f"Target OSPF Neighbor Detail ({target_nbr}): {nbr_detail.model_dump_json()}")
 
                 t0 = time.perf_counter()
                 iface_summary = parse_interfaces_data(api, details=False)
@@ -296,11 +253,19 @@ def perform_cross_domain_investigation_profiled(user_prompt: str) -> Tuple[str, 
                 dur_ms = max(1, int((t1 - t0) * 1000))
                 tools_used.append("get_interfaces")
                 tool_profiles.append(ToolCallProfiling(tool="get_interfaces", duration_ms=dur_ms, routeros_ms=dur_ms))
-                evidence_blocks.append(f"Underlying Interface Summary: {iface_summary.model_dump_json(exclude_none=True)}")
 
-                if iface_summary.summary.link_down > 0:
-                    down_iface = iface_summary.summary.link_down_interfaces[0]
-                    evidence_blocks.append(f"PYTHON CORRELATION FINDING: OSPF neighbor {target_nbr} is Down on {nbr_detail.interface}. Interface {down_iface} is LINK_DOWN. Primary RCA Candidate: UNDERLYING_LINK_SUSPECTED.")
+                link_down_iface = iface_summary.summary.link_down_interfaces[0] if iface_summary.summary.link_down > 0 else None
+                rca_cat = "UNDERLYING_LINK_SUSPECTED" if link_down_iface else "OSPF_ADJACENCY_DOWN"
+
+                compact_evidence_dicts.append({
+                    "domain": "OSPF",
+                    "target_neighbor": target_nbr,
+                    "state": "Down",
+                    "interface": nbr_detail.interface,
+                    "interface_state": "LINK_DOWN" if link_down_iface else "ACTIVE",
+                    "anomaly": f"OSPF neighbor {target_nbr} Down",
+                    "rca_candidate": rca_cat
+                })
 
         # DOMAIN 3: STATIC ROUTING
         elif "route" in prompt_lower or "routing" in prompt_lower or "gateway" in prompt_lower or bool(re.search(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/\d{1,2}\b", prompt_lower)):
@@ -310,10 +275,17 @@ def perform_cross_domain_investigation_profiled(user_prompt: str) -> Tuple[str, 
             dur_ms = max(1, int((t1 - t0) * 1000))
             tools_used.append("get_static_routes")
             tool_profiles.append(ToolCallProfiling(tool="get_static_routes", duration_ms=dur_ms, routeros_ms=dur_ms))
-            evidence_blocks.append(f"Static Route Table & Details: {routes_data.model_dump_json(exclude_none=True)}")
 
             if routes_data.inactive == 0:
-                evidence_blocks.append("PYTHON CORRELATION FINDING: All static routes are active. Classification: NO_ANOMALY.")
+                compact_evidence_dicts.append({
+                    "domain": "STATIC_ROUTE",
+                    "total_routes": routes_data.total,
+                    "active_routes": routes_data.active,
+                    "inactive_routes": 0,
+                    "disabled_routes": routes_data.disabled,
+                    "anomaly": None,
+                    "rca_candidate": "NO_ANOMALY"
+                })
             elif routes_data.inactive_routes:
                 target_dst = routes_data.inactive_routes[0]
                 t0 = time.perf_counter()
@@ -322,7 +294,6 @@ def perform_cross_domain_investigation_profiled(user_prompt: str) -> Tuple[str, 
                 dur_ms = max(1, int((t1 - t0) * 1000))
                 tools_used.append("get_route")
                 tool_profiles.append(ToolCallProfiling(tool="get_route", duration_ms=dur_ms, routeros_ms=dur_ms))
-                evidence_blocks.append(f"Target Route Detail ({target_dst}): {route_detail.model_dump_json()}")
 
                 t0 = time.perf_counter()
                 iface_summary = parse_interfaces_data(api, details=False)
@@ -330,11 +301,18 @@ def perform_cross_domain_investigation_profiled(user_prompt: str) -> Tuple[str, 
                 dur_ms = max(1, int((t1 - t0) * 1000))
                 tools_used.append("get_interfaces")
                 tool_profiles.append(ToolCallProfiling(tool="get_interfaces", duration_ms=dur_ms, routeros_ms=dur_ms))
-                evidence_blocks.append(f"Underlying Egress Interface Summary: {iface_summary.model_dump_json(exclude_none=True)}")
 
-                if iface_summary.summary.link_down > 0:
-                    down_iface = iface_summary.summary.link_down_interfaces[0]
-                    evidence_blocks.append(f"PYTHON CORRELATION FINDING: Static route {target_dst} via gateway {route_detail.gateway} is active=false. Gateway egress interface {down_iface} is LINK_DOWN. Primary RCA Candidate: NEXT_HOP_UNREACHABLE.")
+                link_down_iface = iface_summary.summary.link_down_interfaces[0] if iface_summary.summary.link_down > 0 else None
+
+                compact_evidence_dicts.append({
+                    "domain": "STATIC_ROUTE",
+                    "destination": target_dst,
+                    "active": False,
+                    "gateway": route_detail.gateway,
+                    "gateway_reachable": (link_down_iface is None),
+                    "anomaly": "NEXT_HOP_UNREACHABLE",
+                    "rca_candidate": "NEXT_HOP_UNREACHABLE"
+                })
 
         # DOMAIN 4: NAT
         elif "nat" in prompt_lower or "masquerade" in prompt_lower or "firewall" in prompt_lower:
@@ -344,20 +322,37 @@ def perform_cross_domain_investigation_profiled(user_prompt: str) -> Tuple[str, 
             dur_ms = max(1, int((t1 - t0) * 1000))
             tools_used.append("get_nat_rules")
             tool_profiles.append(ToolCallProfiling(tool="get_nat_rules", duration_ms=dur_ms, routeros_ms=dur_ms))
-            evidence_blocks.append(f"NAT Firewall Rules & Details: {nat_data.model_dump_json(exclude_none=True)}")
 
-            if "investigate" in prompt_lower or nat_data.zero_counter_rules:
+            if not nat_data.zero_counter_rules and "investigate" not in prompt_lower:
+                compact_evidence_dicts.append({
+                    "domain": "NAT",
+                    "rules_total": nat_data.total,
+                    "active_rules": nat_data.active,
+                    "disabled_rules": nat_data.disabled,
+                    "anomaly": None,
+                    "rca_candidate": "NO_ANOMALY"
+                })
+            else:
                 t0 = time.perf_counter()
                 iface_summary = parse_interfaces_data(api, details=False)
                 t1 = time.perf_counter()
                 dur_ms = max(1, int((t1 - t0) * 1000))
                 tools_used.append("get_interfaces")
                 tool_profiles.append(ToolCallProfiling(tool="get_interfaces", duration_ms=dur_ms, routeros_ms=dur_ms))
-                evidence_blocks.append(f"WAN Outbound Interface Summary: {iface_summary.model_dump_json(exclude_none=True)}")
 
-                if iface_summary.summary.link_down > 0:
-                    down_iface = iface_summary.summary.link_down_interfaces[0]
-                    evidence_blocks.append(f"PYTHON CORRELATION FINDING: NAT rule out-interface configured, but WAN interface {down_iface} is LINK_DOWN. Primary RCA Candidate: UPSTREAM_DEPENDENCY.")
+                link_down_iface = iface_summary.summary.link_down_interfaces[0] if iface_summary.summary.link_down > 0 else None
+                rca_cat = "UPSTREAM_DEPENDENCY" if link_down_iface else "NAT_TRAFFIC_ANOMALY"
+
+                compact_evidence_dicts.append({
+                    "domain": "NAT",
+                    "rules_total": nat_data.total,
+                    "active_rules": nat_data.active,
+                    "disabled_rules": nat_data.disabled,
+                    "wan_interface": link_down_iface or "configured WAN",
+                    "wan_running": (link_down_iface is None),
+                    "anomaly": rca_cat,
+                    "rca_candidate": rca_cat
+                })
 
         # GENERAL SYSTEM / INTERFACE INVESTIGATION
         else:
@@ -367,7 +362,6 @@ def perform_cross_domain_investigation_profiled(user_prompt: str) -> Tuple[str, 
             dur_ms = max(1, int((t1 - t0) * 1000))
             tools_used.append("get_interfaces")
             tool_profiles.append(ToolCallProfiling(tool="get_interfaces", duration_ms=dur_ms, routeros_ms=dur_ms))
-            evidence_blocks.append(f"Interface Summary: {iface_summary.model_dump_json(exclude_none=True)}")
 
             if iface_summary.summary.link_down_interfaces:
                 target_iface = iface_summary.summary.link_down_interfaces[0]
@@ -377,27 +371,30 @@ def perform_cross_domain_investigation_profiled(user_prompt: str) -> Tuple[str, 
                 dur_ms = max(1, int((t1 - t0) * 1000))
                 tools_used.append("get_interface_detail")
                 tool_profiles.append(ToolCallProfiling(tool="get_interface_detail", duration_ms=dur_ms, routeros_ms=dur_ms))
-                evidence_blocks.append(f"Target Interface Detail ({target_iface}): {iface_detail.model_dump_json()}")
 
-                t0 = time.perf_counter()
-                iface_logs = parse_interface_logs(api, target_iface)
-                t1 = time.perf_counter()
-                dur_ms = max(1, int((t1 - t0) * 1000))
-                tools_used.append("get_interface_logs")
-                tool_profiles.append(ToolCallProfiling(tool="get_interface_logs", duration_ms=dur_ms, routeros_ms=dur_ms))
-                evidence_blocks.append(f"Target Interface Logs ({target_iface}): {iface_logs.model_dump_json()}")
-
-                t0 = time.perf_counter()
-                iface_traffic = parse_interface_traffic(api, target_iface)
-                t1 = time.perf_counter()
-                dur_ms = max(1, int((t1 - t0) * 1000))
-                tools_used.append("get_interface_traffic")
-                tool_profiles.append(ToolCallProfiling(tool="get_interface_traffic", duration_ms=dur_ms, routeros_ms=dur_ms))
-                evidence_blocks.append(f"Target Interface Traffic ({target_iface}): {iface_traffic.model_dump_json()}")
+                compact_evidence_dicts.append({
+                    "domain": "INTERFACE",
+                    "target_interface": target_iface,
+                    "running": False,
+                    "disabled": False,
+                    "status_tag": "LINK_DOWN",
+                    "anomaly": f"Interface {target_iface} LINK_DOWN",
+                    "rca_candidate": "UNDERLYING_LINK_SUSPECTED"
+                })
+            else:
+                compact_evidence_dicts.append({
+                    "domain": "INTERFACE",
+                    "total": iface_summary.summary.total,
+                    "active": iface_summary.summary.active,
+                    "disabled": iface_summary.summary.disabled,
+                    "link_down": 0,
+                    "anomaly": None,
+                    "rca_candidate": "NO_ANOMALY"
+                })
 
     t_corr_end = time.perf_counter()
     correlation_ms = max(1, int((t_corr_end - t_corr_start) * 1000))
-    correlated_facts = "\n".join(evidence_blocks)
+    correlated_facts = json.dumps(compact_evidence_dicts, indent=2)
     return correlated_facts, tools_used, tool_profiles, intent_ms, correlation_ms
 
 
@@ -415,26 +412,25 @@ def run_noc_agent(user_message: str) -> Tuple[str, List[str], Optional[TokenUsag
         evidence_text, tools_used, tool_profiles, intent_ms, correlation_ms = perform_cross_domain_investigation_profiled(user_message)
     except RouterOSError as e:
         logger.error(f"RouterOS error during cross-domain investigation: {e}")
-        evidence_text = f"RouterOS Connection Failure: {str(e)}"
+        evidence_text = json.dumps([{"domain": "SYSTEM", "error": f"RouterOS Connection Failure: {str(e)}", "rca_candidate": "INSUFFICIENT_EVIDENCE"}])
         tools_used = ["get_system_health"]
         tool_profiles = [ToolCallProfiling(tool="get_system_health", duration_ms=10, routeros_ms=10)]
         intent_ms = 1
         correlation_ms = 10
     except Exception as e:
         logger.error(f"Unexpected error during cross-domain investigation: {e}")
-        evidence_text = f"Tool Execution Error: {str(e)}"
+        evidence_text = json.dumps([{"domain": "SYSTEM", "error": f"Tool Execution Error: {str(e)}", "rca_candidate": "INSUFFICIENT_EVIDENCE"}])
         tools_used = ["get_system_health"]
         tool_profiles = [ToolCallProfiling(tool="get_system_health", duration_ms=10, routeros_ms=10)]
         intent_ms = 1
         correlation_ms = 10
 
-    # Single OpenRouter RCA Call
-    llm = get_llm(callbacks=[token_callback])
+    # Single OpenRouter RCA Call with max_tokens=350 limit
+    llm = get_llm(callbacks=[token_callback], max_tokens=350)
     
     prompt_payload = (
-        f"User Prompt: {user_message}\n\n"
-        f"CORRELATED CROSS-DOMAIN NETWORK EVIDENCE:\n{evidence_text}\n\n"
-        f"Now generate the final complete NOC Report following the exact 10-section format."
+        f"User Request: {user_message}\n"
+        f"Compact Evidence Payload:\n{evidence_text}"
     )
     
     messages = [
@@ -442,7 +438,7 @@ def run_noc_agent(user_message: str) -> Tuple[str, List[str], Optional[TokenUsag
         HumanMessage(content=prompt_payload),
     ]
 
-    logger.info("Executing SINGLE OpenRouter Phase 3 RCA reasoning call...")
+    logger.info("Executing SINGLE OpenRouter Phase 3 RCA reasoning call (max_tokens=350)...")
     t_llm_start = time.perf_counter()
     response = llm.invoke(messages)
     t_llm_end = time.perf_counter()
@@ -470,7 +466,6 @@ def run_noc_agent(user_message: str) -> Tuple[str, List[str], Optional[TokenUsag
         total_tokens=total_toks,
     )
 
-    # Log EXACT profiling JSON format requested by the user
     profiling_log_dict = {
         "total_request_ms": total_request_ms,
         "intent_detection_ms": intent_ms,

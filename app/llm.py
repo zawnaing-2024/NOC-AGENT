@@ -53,15 +53,15 @@ class OpenRouterTokenCallback(BaseCallbackHandler):
         )
 
 
-def get_llm(callbacks: Optional[list] = None) -> ChatOpenAI:
+def get_llm(callbacks: Optional[list] = None, max_tokens: int = 350) -> ChatOpenAI:
     """
     Initializes and returns a LangChain ChatOpenAI client connected exclusively to OpenRouter API.
-    Enforces configured timeouts, max retries, headers, and temperature=0.0.
+    Enforces configured timeouts, max retries, headers, max_tokens, and temperature=0.0.
     """
     logger.info(
         f"Initializing OpenRouter client at {settings.OPENROUTER_BASE_URL} "
-        f"(model={settings.OPENROUTER_MODEL}, timeout={settings.OPENROUTER_TIMEOUT}s, "
-        f"max_retries={settings.OPENROUTER_MAX_RETRIES})"
+        f"(model={settings.OPENROUTER_MODEL}, max_tokens={max_tokens}, "
+        f"timeout={settings.OPENROUTER_TIMEOUT}s, max_retries={settings.OPENROUTER_MAX_RETRIES})"
     )
 
     headers = {
@@ -74,6 +74,7 @@ def get_llm(callbacks: Optional[list] = None) -> ChatOpenAI:
         api_key=settings.OPENROUTER_API_KEY,
         model=settings.OPENROUTER_MODEL,
         temperature=0.0,
+        max_tokens=max_tokens,
         streaming=False,
         request_timeout=settings.OPENROUTER_TIMEOUT,
         max_retries=settings.OPENROUTER_MAX_RETRIES,

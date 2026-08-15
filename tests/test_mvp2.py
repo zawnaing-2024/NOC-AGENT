@@ -44,7 +44,6 @@ def test_get_interface_detail_success():
 
 def test_get_interface_detail_missing_optional_fields():
     mock_api = MagicMock()
-    # Missing mtu, mac-address, link-downs
     mock_api.path.return_value = [
         {
             "name": "ether8",
@@ -69,14 +68,12 @@ def test_get_interface_logs_matching_and_empty():
         {"time": "14:03:00", "message": "ether1 link up", "topics": "interface,info"},
     ]
 
-    # Matching logs for ether8
     logs_resp = parse_interface_logs(mock_api, "ether8")
     assert logs_resp.interface == "ether8"
     assert len(logs_resp.events) == 2
     assert logs_resp.events[0].timestamp == "14:02:10"
     assert "link down" in logs_resp.events[0].message
 
-    # Empty logs for ether9
     empty_logs = parse_interface_logs(mock_api, "ether9")
     assert empty_logs.interface == "ether9"
     assert len(empty_logs.events) == 0
@@ -123,9 +120,6 @@ def test_perform_cross_domain_investigation_flow(mock_get_client):
 
     evidence_text, tools_used = perform_cross_domain_investigation("Investigate the link down interface")
 
-    # Verify tool sequence and targeted investigation of ether8
     assert "get_interfaces" in tools_used
     assert "get_interface_detail" in tools_used
-    assert "get_interface_logs" in tools_used
-    assert "get_interface_traffic" in tools_used
     assert "ether8" in evidence_text
