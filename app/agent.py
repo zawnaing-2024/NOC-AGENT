@@ -150,6 +150,26 @@ def perform_cross_domain_investigation_profiled(user_prompt: str) -> Tuple[str, 
     intent_ms = max(1, int((t_intent_end - t_start) * 1000))
 
     t_corr_start = time.perf_counter()
+
+    # PHASE 4 AIOPS HISTORICAL / INCIDENT QUERIES
+    if any(k in prompt_lower for k in ["incident", "incidents", "alerting", "alert", "what changed", "events", "history", "anomaly"]):
+        from app.db.database import db
+        incidents = db.get_incidents(limit=10)
+        recent_events = db.get_events(limit=10)
+        tools_used.append("get_aiops_history")
+        tool_profiles.append(ToolCallProfiling(tool="get_aiops_history", duration_ms=5, routeros_ms=0))
+        
+        compact_evidence_dicts.append({
+            "domain": "AIOPS_TELEMETRY",
+            "incidents_count": len(incidents),
+            "recent_incidents": incidents[:3],
+            "recent_events": recent_events[:5],
+            "rca_candidate": "NO_ANOMALY" if not incidents else incidents[0].get("severity", "MAJOR")
+        })
+        t_corr_end = time.perf_counter()
+        correlation_ms = max(1, int((t_corr_end - t_corr_start) * 1000))
+        return json.dumps(compact_evidence_dicts, indent=2), tools_used, tool_profiles, intent_ms, correlation_ms
+
     with get_routeros_client(host=target_host) as api:
 
         # DOMAIN 1: BGP

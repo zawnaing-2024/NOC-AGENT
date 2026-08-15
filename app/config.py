@@ -4,7 +4,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     """
-    Application configuration settings for MikroTik NOC Agent with OpenRouter API.
+    Application configuration settings for MikroTik NOC Agent with OpenRouter API and Phase 4 AIOps.
     Supports single or multi-router environments.
     """
     model_config = SettingsConfigDict(
@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     OPENROUTER_TIMEOUT: int = Field(default=30, description="OpenRouter API request timeout in seconds")
     OPENROUTER_MAX_RETRIES: int = Field(default=2, description="Maximum retries for transient OpenRouter API errors")
 
+    # Phase 4 AIOps Collector, Database, and Correlation Settings
+    DATABASE_PATH: str = Field(default="data/noc_agent.db", description="Path to SQLite historical database")
+    COLLECTOR_INTERVAL_SECONDS: int = Field(default=60, description="Background telemetry collection interval in seconds")
+    CORRELATION_WINDOW_SECONDS: int = Field(default=300, description="Correlation window for grouping related events into an incident (default 5 min)")
+
     APP_HOST: str = Field(default="0.0.0.0", description="FastAPI host binding")
     APP_PORT: int = Field(default=8000, description="FastAPI port binding")
 
@@ -46,7 +51,8 @@ class Settings(BaseSettings):
         return (
             f"Settings(ROUTER1='{self.MIKROTIK_ROUTER1_HOST}', "
             f"ROUTER2='{self.MIKROTIK_ROUTER2_HOST}', "
-            f"OPENROUTER_MODEL='{self.OPENROUTER_MODEL}')"
+            f"OPENROUTER_MODEL='{self.OPENROUTER_MODEL}', "
+            f"COLLECTOR_INTERVAL={self.COLLECTOR_INTERVAL_SECONDS}s)"
         )
 
 

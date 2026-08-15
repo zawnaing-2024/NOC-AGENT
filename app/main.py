@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import time
 from contextlib import asynccontextmanager
@@ -9,6 +10,9 @@ from app.config import settings
 from app.schemas.network import ChatRequest, ChatResponse, ErrorResponse, ErrorDetail
 from app.agent import run_noc_agent
 from app.tools.routeros import RouterOSError
+from app.db.database import db
+from app.collector.service import collector_loop
+from app.api.endpoints import router as api_router
 
 # Configure application logging
 logging.basicConfig(
@@ -20,19 +24,37 @@ logger = logging.getLogger("mikrotik_noc_agent.main")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Starting MikroTik NOC Engineer Agent API Service (Pure OpenRouter Architecture)")
+    logger.info("Starting MikroTik NOC Engineer Agent API Service (Phase 4 AIOps Architecture)")
     logger.info(f"Target MikroTik Host: {settings.MIKROTIK_HOST}:{settings.MIKROTIK_PORT}")
     logger.info(f"OpenRouter API URL: {settings.OPENROUTER_BASE_URL} (model={settings.OPENROUTER_MODEL})")
+    
+    # Initialize Phase 4 SQLite Database
+    db.init_db()
+
+    # Start Background Telemetry Collector Task
+    collector_task = asyncio.create_task(collector_loop())
+    logger.info(f"Started AIOps background collector task (interval={settings.COLLECTOR_INTERVAL_SECONDS}s)")
+    
     yield
+    
+    logger.info("Shutting down background telemetry collector...")
+    collector_task.cancel()
+    try:
+        await collector_task
+    except asyncio.CancelledError:
+        pass
     logger.info("Shutting down MikroTik NOC Engineer Agent API Service")
 
 
 app = FastAPI(
     title="MikroTik NOC Engineer Agent API",
-    description="Production-grade read-only AI NOC Agent inspecting MikroTik devices via RouterOS API & OpenRouter remote LLM.",
-    version="2.0.0",
+    description="Production-grade read-only AI NOC Agent with Phase 4 AIOps Telemetry, Baseline Analysis, Event Correlation & Incident Intelligence.",
+    version="4.0.0",
     lifespan=lifespan,
 )
+
+# Mount Phase 4 Read-Only AIOps REST API endpoints
+app.include_router(api_router)
 
 
 @app.get("/health", status_code=status.HTTP_200_OK)
