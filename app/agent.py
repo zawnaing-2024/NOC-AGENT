@@ -1,222 +1,184 @@
 import logging
+import json
 from typing import Annotated, Sequence, TypedDict, List, Tuple, Optional
 from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, ToolMessage
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 
 from app.llm import get_llm, OpenRouterTokenCallback
-from app.tools.routeros import get_system_health, get_interfaces, get_bgp_peers, RouterOSError
+from app.tools.routeros import (
+    get_system_health,
+    get_interfaces,
+    get_interface_detail,
+    get_interface_logs,
+    get_interface_traffic,
+    get_bgp_peers,
+    parse_interfaces_data,
+    parse_single_interface_detail,
+    parse_interface_logs,
+    parse_interface_traffic,
+    parse_system_resource,
+    parse_bgp_peers_data,
+    get_routeros_client,
+    RouterOSError,
+)
 from app.schemas.network import TokenUsage
 
 logger = logging.getLogger("mikrotik_noc_agent.agent")
 
-TOOLS = [get_system_health, get_interfaces, get_bgp_peers]
+TOOLS = [
+    get_system_health,
+    get_interfaces,
+    get_interface_detail,
+    get_interface_logs,
+    get_interface_traffic,
+    get_bgp_peers,
+]
 TOOL_MAP = {tool.name: tool for tool in TOOLS}
 
-SYSTEM_PROMPT = """You are a Senior ISP NOC Network Engineer.
-Your goal is to inspect MikroTik routers using strictly READ-ONLY evidence tools and provide concise, accurate, evidence-backed NOC reports.
+SYSTEM_PROMPT = """You are an ISP NOC engineer. Analyze only supplied evidence. Separate facts from hypotheses. Never invent network data. Do not claim root cause without evidence. If evidence is insufficient, say so. Explain the most likely cause only when supported by multiple evidence points. Do not infer service impact without topology or interface-role evidence.
 
-INTENT-BASED TOOL ROUTING RULES:
-1. HEALTH REQUEST (e.g. "Check router health", "Is system healthy?"): Call ONLY `get_system_health()`. Do NOT call interface or BGP tools unless health evidence reveals an anomaly.
-2. INTERFACE REQUEST (e.g. "Check interface states", "Find link down ports"): Call ONLY `get_interfaces(details=False)`. Do NOT call health or BGP tools.
-3. BGP REQUEST (e.g. "Check BGP", "Check BGP peers"): Call ONLY `get_bgp_peers(details=False)`. Do NOT call health or interface tools.
-4. GENERAL NETWORK PROBLEM REQUEST (e.g. "Check for network problems", "Investigate router issues"): Call summary tools `get_system_health()`, `get_interfaces(details=False)`, and `get_bgp_peers(details=False)`.
+RCA CLASSIFICATION CATEGORIES:
+- PHYSICAL_LINK_SUSPECTED: Evidence of repeated link state transitions (flapping up/down) in event logs.
+- INTERFACE_CONFIGURATION_SUSPECTED: Evidence of MTU or administrative configuration mismatch.
+- REMOTE_DEVICE_SUSPECTED: Partner device port behavior anomaly.
+- TRAFFIC_OR_ERROR_ANOMALY: Operational interface with elevated RX/TX error or drop counters.
+- EXPECTED_OR_INTENTIONAL_STATE: Interface is administratively disabled (disabled=true). No fault inferred.
+- INSUFFICIENT_EVIDENCE: Interface is down without role/topology context or log evidence.
 
-STRICT CLASSIFICATION & EVIDENCE RULES:
-1. UNCONNECTED PORTS (status_tag="UNCONNECTED"): Interfaces that are administratively enabled but running=false with zero historical traffic.
-   - MANDATORY PHRASING: "<N> interfaces are currently unconnected. Their intended role is unknown. No fault is inferred from this state alone."
-   - DO NOT label unconnected ports as "standby", "spare", "unused", "faults", or "incidents".
-2. LINK_DOWN PORTS (status_tag="LINK_DOWN"): Interfaces that are administratively enabled but running=false after previously carrying traffic.
-   - MANDATORY PHRASING: "<interface_name> is administratively enabled but currently not operational. Further investigation is required to determine whether this is expected or represents a fault."
-   - DO NOT automatically classify LINK_DOWN as an active incident without role/event logs.
-3. DISABLED PORTS (status_tag="DISABLED"): Interfaces that are disabled=true.
-   - MANDATORY PHRASING: "<interface_name> is administratively disabled. No fault is inferred."
-4. ACTIVE / HEALTHY PORTS (status_tag="ACTIVE"): Running=true with zero errors. Treat as normal.
-5. ERROR PORTS (status_tag="ERROR"): Running=true with elevated RX/TX errors. Report exact error counts: "<interface_name> is operational but has elevated error counters (RX errors=<count>, TX errors=<count>) and requires investigation."
-
-STRICT IMPACT & ROLE SPECULATION CONSTRAINTS:
-- NEVER invent or assume interface roles like "primary", "uplink", "customer", "core", or "backup" unless explicitly provided in evidence.
-- IF INTERFACE ROLE IS UNKNOWN, IMPACT MUST STATE EXACTLY: "Impact cannot be determined from the available evidence."
-- IF NO ANOMALY EXISTS, POSSIBLE CAUSES MUST STATE EXACTLY: "No abnormal condition identified."
-- DISTINGUISH FACTS FROM HYPOTHESES clearly. (Fact: "ether8 is administratively enabled and operationally down." Hypothesis: "This could indicate a physical/link issue, but there is insufficient evidence to determine the root cause.")
-
-TARGETED STAGE 2 INVESTIGATION:
-- If a single interface has a LINK_DOWN or ERROR status, call `get_interfaces(details=True, interface_name="<name>")` to investigate ONLY that specific interface. Do NOT dump all interfaces.
+CONFIDENCE RULES:
+- LOW: Only one weak evidence source.
+- MEDIUM: Multiple supporting evidence points.
+- HIGH: Multiple independent evidence sources strongly support the same conclusion.
 
 Reasoning Output Format:
-Your response MUST strictly use this 9-section NOC format:
+Your response MUST strictly follow this NOC format:
 
 OBSERVATION
-<Brief summary of user query and tool execution>
+<Brief statement of request and diagnostic steps>
 
 EVIDENCE
 <Facts and metrics retrieved directly from tool calls>
 
-NORMAL CONDITIONS
-<Healthy system metrics, ACTIVE interfaces, UNCONNECTED ports, and DISABLED ports>
+TIMELINE
+<Chronological list of timestamped log events, or 'No timestamped log events recorded.'>
 
-ANOMALIES
-<Only genuine faults (LINK_DOWN or ERROR interfaces, high CPU/RAM, disconnected BGP) or 'None detected'>
+ANOMALY
+<Detailed description of anomalous condition>
 
-UNCERTAINTIES
-<Missing evidence such as interface event logs or port role context>
+RCA
+<RCA Category: PHYSICAL_LINK_SUSPECTED | INSUFFICIENT_EVIDENCE | TRAFFIC_OR_ERROR_ANOMALY | EXPECTED_OR_INTENTIONAL_STATE | INTERFACE_CONFIGURATION_SUSPECTED | REMOTE_DEVICE_SUSPECTED>
+<Evidence-backed explanation. Never claim 'bad cable' or 'hardware failure' without proof>
 
-POSSIBLE CAUSES
-<Evidence-backed hypotheses or 'No abnormal condition identified.'>
+RCA_CONFIDENCE
+<LOW | MEDIUM | HIGH - rationale based on evidence completeness>
 
 IMPACT
-<Evidence-backed service impact or 'Impact cannot be determined from the available evidence.'>
+<State 'Impact cannot be determined because interface role/topology is unknown.' unless role evidence is provided>
 
-CONFIDENCE
-<High / Medium / Low - state rationale based on evidence completeness>
+UNCERTAINTIES
+<Missing info such as connected device state, cable test results, or topology diagram>
 
-RECOMMENDED NEXT CHECKS
-<Read-only diagnostic checks to run next>
+RECOMMENDED_NEXT_CHECKS
+<Read-only troubleshooting checks>
 """
 
 
-class AgentState(TypedDict):
-    messages: Annotated[Sequence[BaseMessage], add_messages]
-    tools_used: List[str]
+def perform_evidence_driven_investigation(user_prompt: str) -> Tuple[str, List[str]]:
+    """
+    Executes Python-driven deterministic evidence collection & correlation (Max 3 stages):
+    Stage 1: Detect summary anomalies (interfaces, BGP, system health)
+    Stage 2: Targeted single-interface detail collection for any anomaly
+    Stage 3: Targeted single-interface log and traffic counter collection
+    Returns (correlated_evidence_text, tools_used_list).
+    """
+    tools_used: List[str] = []
+    prompt_lower = user_prompt.lower()
 
+    with get_routeros_client() as api:
+        # Determine intent & initial summary tools
+        if "bgp" in prompt_lower:
+            bgp_data = parse_bgp_peers_data(api, details=False)
+            tools_used.append("get_bgp_peers")
+            correlated_facts = f"BGP Peer Summary: {bgp_data.model_dump_json()}"
 
-def call_llm_node(state: AgentState) -> dict:
-    """Invokes OpenRouter LLM bound with read-only network tools."""
-    logger.info("Executing Agent Node via OpenRouter")
-    callback = OpenRouterTokenCallback()
-    llm = get_llm(callbacks=[callback])
-    llm_with_tools = llm.bind_tools(TOOLS)
-    
-    messages = list(state["messages"])
-    if not isinstance(messages[0], SystemMessage):
-        messages.insert(0, SystemMessage(content=SYSTEM_PROMPT))
-        
-    response = llm_with_tools.invoke(messages)
-    return {"messages": [response]}
+        elif "health" in prompt_lower or "cpu" in prompt_lower or "memory" in prompt_lower:
+            health_data = parse_system_resource(api)
+            tools_used.append("get_system_health")
+            correlated_facts = f"System Resource Health: {health_data.model_dump_json()}"
 
-
-def execute_tools_node(state: AgentState) -> dict:
-    """Executes requested read-only tool calls safely."""
-    last_message = state["messages"][-1]
-    tool_messages = []
-    tools_used = list(state.get("tools_used", []))
-
-    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
-        for tool_call in last_message.tool_calls:
-            tool_name = tool_call["name"]
-            tool_args = tool_call.get("args", {})
-            logger.info(f"Executing Tool Node for: {tool_name} with args={tool_args}")
+        else:
+            # Interface or general network investigation (default flow)
+            tools_used.append("get_interfaces")
+            iface_summary = parse_interfaces_data(api, details=False)
             
-            if tool_name not in tools_used:
-                tools_used.append(tool_name)
+            evidence_blocks = [f"Interface Summary: {iface_summary.model_dump_json(exclude_none=True)}"]
+            
+            # Check for LINK_DOWN or ERROR interfaces requiring targeted investigation
+            link_down_ifaces = iface_summary.summary.link_down_interfaces
+            error_ifaces = iface_summary.summary.error_interfaces
+            target_ifaces = list(set(link_down_ifaces + error_ifaces))
+
+            if target_ifaces:
+                target_iface = target_ifaces[0]  # Focus investigation on primary anomalous interface (e.g. ether8)
                 
-            if tool_name in TOOL_MAP:
-                try:
-                    tool_output = TOOL_MAP[tool_name].invoke(tool_args)
-                except RouterOSError as e:
-                    logger.error(f"RouterOS error executing tool {tool_name}: {e}")
-                    tool_output = f'{{"error": "{str(e)}"}}'
-                except Exception as e:
-                    logger.error(f"Unexpected error executing tool {tool_name}: {e}")
-                    tool_output = f'{{"error": "Tool execution failed: {str(e)}"}}'
-            else:
-                tool_output = f'{{"error": "Unknown tool {tool_name}"}}'
+                # Stage 2: Targeted Detail
+                tools_used.append("get_interface_detail")
+                iface_detail = parse_single_interface_detail(api, target_iface)
+                evidence_blocks.append(f"Target Interface Detail ({target_iface}): {iface_detail.model_dump_json()}")
+                
+                # Stage 3: Targeted Logs & Traffic Counters
+                tools_used.append("get_interface_logs")
+                iface_logs = parse_interface_logs(api, target_iface)
+                evidence_blocks.append(f"Target Interface Logs ({target_iface}): {iface_logs.model_dump_json()}")
 
-            tool_messages.append(
-                ToolMessage(content=str(tool_output), tool_call_id=tool_call["id"])
-            )
+                tools_used.append("get_interface_traffic")
+                iface_traffic = parse_interface_traffic(api, target_iface)
+                evidence_blocks.append(f"Target Interface Traffic ({target_iface}): {iface_traffic.model_dump_json()}")
 
-    return {"messages": tool_messages, "tools_used": tools_used}
+            correlated_facts = "\n".join(evidence_blocks)
 
-
-def force_tool_execution_node(state: AgentState) -> dict:
-    """Intent-aware fallback node executing the appropriate tool if LLM skips tool calling on first pass."""
-    logger.warning("OpenRouter LLM did not emit tool calls on first pass. Executing intent-based fallback.")
-    tools_used = list(state.get("tools_used", []))
-    
-    # Inspect user query to determine prompt intent
-    user_prompt = ""
-    for msg in state["messages"]:
-        if isinstance(msg, HumanMessage):
-            user_prompt = str(msg.content).lower()
-            break
-
-    if "interface" in user_prompt or "link" in user_prompt or "port" in user_prompt:
-        target_tool = "get_interfaces"
-        if target_tool not in tools_used:
-            tools_used.append(target_tool)
-        output = get_interfaces.invoke({"details": False})
-    elif "bgp" in user_prompt or "peer" in user_prompt:
-        target_tool = "get_bgp_peers"
-        if target_tool not in tools_used:
-            tools_used.append(target_tool)
-        output = get_bgp_peers.invoke({"details": False})
-    else:
-        target_tool = "get_system_health"
-        if target_tool not in tools_used:
-            tools_used.append(target_tool)
-        output = get_system_health.invoke({})
-
-    tool_msg = SystemMessage(
-        content=f"System Evidence Notification: Output from {target_tool}: {output}. Now produce your final 9-section NOC report using this evidence."
-    )
-    return {"messages": [tool_msg], "tools_used": tools_used}
-
-
-def should_continue(state: AgentState) -> str:
-    """Determines whether to execute tools, force fallback summary, or end graph."""
-    last_message = state["messages"][-1]
-    tools_used = state.get("tools_used", [])
-
-    if hasattr(last_message, "tool_calls") and last_message.tool_calls:
-        return "tools"
-    
-    if not tools_used:
-        return "fallback"
-
-    return END
-
-
-def create_agent_graph():
-    """Builds and compiles the LangGraph NOC agent graph."""
-    graph_builder = StateGraph(AgentState)
-    graph_builder.add_node("agent", call_llm_node)
-    graph_builder.add_node("tools", execute_tools_node)
-    graph_builder.add_node("fallback", force_tool_execution_node)
-
-    graph_builder.set_entry_point("agent")
-    graph_builder.add_conditional_edges(
-        "agent",
-        should_continue,
-        {"tools": "tools", "fallback": "fallback", END: END}
-    )
-    graph_builder.add_edge("tools", "agent")
-    graph_builder.add_edge("fallback", "agent")
-
-    return graph_builder.compile()
-
-
-noc_agent_app = create_agent_graph()
+    return correlated_facts, tools_used
 
 
 def run_noc_agent(user_message: str) -> Tuple[str, List[str], Optional[TokenUsage]]:
     """
-    High-level entry point to run the NOC Agent with OpenRouter API.
+    High-level entry point for MVP-2 NOC Agent.
+    Executes Python evidence correlation, then calls OpenRouter EXACTLY ONCE for final RCA generation.
     Returns (answer_text, tools_used_list, token_usage).
     """
+    logger.info(f"Processing MVP-2 NOC Agent request: '{user_message}'")
     token_callback = OpenRouterTokenCallback()
     
-    initial_state: AgentState = {
-        "messages": [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=user_message)],
-        "tools_used": [],
-    }
+    try:
+        # Step 1-3: Python-driven evidence collection & correlation
+        evidence_text, tools_used = perform_evidence_driven_investigation(user_message)
+    except RouterOSError as e:
+        logger.error(f"RouterOS error during evidence collection: {e}")
+        evidence_text = f"RouterOS Connection Failure: {str(e)}"
+        tools_used = ["get_interfaces"]
+    except Exception as e:
+        logger.error(f"Unexpected error during evidence collection: {e}")
+        evidence_text = f"Tool Execution Error: {str(e)}"
+        tools_used = ["get_interfaces"]
+
+    # Step 4: Single OpenRouter Reasoning Call
+    llm = get_llm(callbacks=[token_callback])
     
-    final_state = noc_agent_app.invoke(initial_state, config={"callbacks": [token_callback]})
+    prompt_payload = (
+        f"User Prompt: {user_message}\n\n"
+        f"CORRELATED NETWORK EVIDENCE:\n{evidence_text}\n\n"
+        f"Now generate the final complete NOC Report following the exact 9-section format."
+    )
     
-    last_message = final_state["messages"][-1]
-    answer = last_message.content if hasattr(last_message, "content") else str(last_message)
-    tools_used = final_state.get("tools_used", [])
-    
+    messages = [
+        SystemMessage(content=SYSTEM_PROMPT),
+        HumanMessage(content=prompt_payload),
+    ]
+
+    logger.info("Executing SINGLE OpenRouter RCA reasoning call...")
+    response = llm.invoke(messages)
+    answer = response.content if hasattr(response, "content") else str(response)
     usage = token_callback.get_token_usage()
-    
+
     return answer, tools_used, usage

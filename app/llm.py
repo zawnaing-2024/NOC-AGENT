@@ -31,10 +31,11 @@ class OpenRouterTokenCallback(BaseCallbackHandler):
             self.latency_ms = int((time.time() - self.start_time) * 1000)
 
         if response.llm_output and isinstance(response.llm_output, dict):
-            token_usage = response.llm_output.get("token_usage", {})
-            self.prompt_tokens = token_usage.get("prompt_tokens", 0)
-            self.completion_tokens = token_usage.get("completion_tokens", 0)
-            self.total_tokens = token_usage.get("total_tokens", 0)
+            token_usage = response.llm_output.get("token_usage") or {}
+            if isinstance(token_usage, dict):
+                self.prompt_tokens = token_usage.get("prompt_tokens", 0)
+                self.completion_tokens = token_usage.get("completion_tokens", 0)
+                self.total_tokens = token_usage.get("total_tokens", 0)
             self.model = response.llm_output.get("model_name", settings.OPENROUTER_MODEL)
             logger.info(
                 f"OpenRouter LLM Usage: model={self.model}, prompt_tokens={self.prompt_tokens}, "

@@ -48,6 +48,49 @@ class InterfacesResponse(BaseModel):
     details: Optional[List[InterfaceInfo]] = None
 
 
+# --- MVP-2 Single Interface Targeted Investigation Schemas ---
+
+class InterfaceDetail(BaseModel):
+    name: str = Field(..., description="Target interface name")
+    type: str = Field(default="ether", description="Interface type")
+    running: bool = Field(default=False, description="Operational state")
+    disabled: bool = Field(default=False, description="Administrative state")
+    mtu: Optional[int] = Field(default=1500, description="Configured MTU")
+    actual_mtu: Optional[int] = Field(default=1500, description="Actual operational MTU")
+    mac_address: Optional[str] = Field(default=None, description="MAC address")
+    rx_bytes: int = Field(default=0, description="Received bytes count")
+    tx_bytes: int = Field(default=0, description="Transmitted bytes count")
+    rx_packets: int = Field(default=0, description="Received packets count")
+    tx_packets: int = Field(default=0, description="Transmitted packets count")
+    rx_errors: int = Field(default=0, description="Receive error count")
+    tx_errors: int = Field(default=0, description="Transmit error count")
+    rx_drops: int = Field(default=0, description="Receive drop count")
+    tx_drops: int = Field(default=0, description="Transmit drop count")
+    link_downs: Optional[int] = Field(default=0, description="Link down transition counter")
+
+
+class LogEvent(BaseModel):
+    timestamp: str = Field(..., description="RouterOS log timestamp")
+    message: str = Field(..., description="Log event message content")
+
+
+class InterfaceLogsResponse(BaseModel):
+    interface: str = Field(..., description="Target interface name")
+    events: List[LogEvent] = Field(default_factory=list, description="Matching timestamped events")
+
+
+class InterfaceTrafficResponse(BaseModel):
+    interface: str = Field(..., description="Target interface name")
+    rx_bytes: int = Field(default=0, description="Current received bytes count")
+    tx_bytes: int = Field(default=0, description="Current transmitted bytes count")
+    rx_packets: int = Field(default=0, description="Current received packets count")
+    tx_packets: int = Field(default=0, description="Current transmitted packets count")
+    rx_errors: int = Field(default=0, description="Current receive error count")
+    tx_errors: int = Field(default=0, description="Current transmit error count")
+    rx_drops: int = Field(default=0, description="Current receive drop count")
+    tx_drops: int = Field(default=0, description="Current transmit drop count")
+
+
 class BgpPeerInfo(BaseModel):
     name: str = Field(..., description="BGP peer session name")
     remote_address: str = Field(default="unknown", description="Remote peer IP address")

@@ -12,6 +12,10 @@ from app.schemas.network import (
     InterfaceInfo,
     InterfaceSummary,
     InterfacesResponse,
+    InterfaceDetail,
+    LogEvent,
+    InterfaceLogsResponse,
+    InterfaceTrafficResponse,
     BgpPeerInfo,
     BgpSummary,
     BgpPeersResponse,
@@ -108,6 +112,15 @@ def parse_int_safe(val: Any, default: int = 0) -> int:
         return int(val)
     except (ValueError, TypeError):
         return default
+
+
+def parse_int_optional(val: Any) -> Optional[int]:
+    try:
+        if val is None:
+            return None
+        return int(val)
+    except (ValueError, TypeError):
+        return None
 
 
 def parse_bool_safe(val: Any, default: bool = False) -> bool:
@@ -272,6 +285,129 @@ def parse_interfaces_data(
     )
 
 
+# --- MVP-2 Targeted Interface Data Parsers ---
+
+def parse_single_interface_detail(api_client: Any, interface_name: str) -> InterfaceDetail:
+    """Queries /interface for a specific target interface and returns normalized InterfaceDetail."""
+    try:
+        iface_tuple = api_client.path("/interface")
+        iface_list = list(iface_tuple)
+    except Exception as e:
+        logger.error(f"Error querying /interface for single interface {interface_name}: {e}")
+        raise RouterOSApiError(f"Failed to fetch interface detail for {interface_name}: {e}") from e
+
+    match_item = None
+    for item in iface_list:
+        if str(item.get("name", "")).lower() == interface_name.lower():
+            match_item = item
+            break
+
+    if not match_item:
+        logger.warning(f"Interface {interface_name} not found in RouterOS list, returning default detail structure.")
+        return InterfaceDetail(name=interface_name)
+
+    name = str(match_item.get("name", interface_name))
+    iface_type = str(match_item.get("type", "ether"))
+    running = parse_bool_safe(match_item.get("running"), False)
+    disabled = parse_bool_safe(match_item.get("disabled"), False)
+    mtu = parse_int_optional(match_item.get("mtu"))
+    actual_mtu = parse_int_optional(match_item.get("actual-mtu", match_item.get("mtu")))
+    mac_address = match_item.get("mac-address")
+    if mac_address is not None:
+        mac_address = str(mac_address)
+
+    rx_bytes = parse_int_safe(match_item.get("rx-byte", match_item.get("rx-bytes", 0)))
+    tx_bytes = parse_int_safe(match_item.get("tx-byte", match_item.get("tx-bytes", 0)))
+    rx_packets = parse_int_safe(match_item.get("rx-packet", match_item.get("rx-packets", 0)))
+    tx_packets = parse_int_safe(match_item.get("tx-packet", match_item.get("tx-packets", 0)))
+    rx_errors = parse_int_safe(match_item.get("rx-error", match_item.get("rx-errors", 0)))
+    tx_errors = parse_int_safe(match_item.get("tx-error", match_item.get("tx-errors", 0)))
+    rx_drops = parse_int_safe(match_item.get("rx-drop", match_item.get("rx-drops", 0)))
+    tx_drops = parse_int_safe(match_item.get("tx-drop", match_item.get("tx-drops", 0)))
+    link_downs = parse_int_optional(match_item.get("link-downs", match_item.get("link-down-count")))
+
+    return InterfaceDetail(
+        name=name,
+        type=iface_type,
+        running=running,
+        disabled=disabled,
+        mtu=mtu,
+        actual_mtu=actual_mtu,
+        mac_address=mac_address,
+        rx_bytes=rx_bytes,
+        tx_bytes=tx_bytes,
+        rx_packets=rx_packets,
+        tx_packets=tx_packets,
+        rx_errors=rx_errors,
+        tx_errors=tx_errors,
+        rx_drops=rx_drops,
+        tx_drops=tx_drops,
+        link_downs=link_downs,
+    )
+
+
+def parse_interface_logs(api_client: Any, interface_name: str) -> InterfaceLogsResponse:
+    """Queries /log and filters timestamped events matching interface_name."""
+    events: List[LogEvent] = []
+    try:
+        log_tuple = api_client.path("/log")
+        log_list = list(log_tuple)
+        
+        target_str = interface_name.lower()
+        for item in log_list:
+            msg = str(item.get("message", ""))
+            topics = str(item.get("topics", ""))
+            time_str = str(item.get("time", item.get("timestamp", "")))
+
+            if target_str in msg.lower() or target_str in topics.lower():
+                events.append(LogEvent(timestamp=time_str, message=msg))
+
+    except Exception as e:
+        logger.warning(f"Unable to fetch /log or search for {interface_name}: {e}")
+
+    return InterfaceLogsResponse(interface=interface_name, events=events)
+
+
+def parse_interface_traffic(api_client: Any, interface_name: str) -> InterfaceTrafficResponse:
+    """Queries current real-time traffic and error counters for interface_name."""
+    try:
+        iface_tuple = api_client.path("/interface")
+        iface_list = list(iface_tuple)
+    except Exception as e:
+        logger.error(f"Error querying /interface traffic for {interface_name}: {e}")
+        raise RouterOSApiError(f"Failed to fetch traffic for {interface_name}: {e}") from e
+
+    match_item = None
+    for item in iface_list:
+        if str(item.get("name", "")).lower() == interface_name.lower():
+            match_item = item
+            break
+
+    if not match_item:
+        return InterfaceTrafficResponse(interface=interface_name)
+
+    rx_bytes = parse_int_safe(match_item.get("rx-byte", match_item.get("rx-bytes", 0)))
+    tx_bytes = parse_int_safe(match_item.get("tx-byte", match_item.get("tx-bytes", 0)))
+    rx_packets = parse_int_safe(match_item.get("rx-packet", match_item.get("rx-packets", 0)))
+    tx_packets = parse_int_safe(match_item.get("tx-packet", match_item.get("tx-packets", 0)))
+    rx_errors = parse_int_safe(match_item.get("rx-error", match_item.get("rx-errors", 0)))
+    tx_errors = parse_int_safe(match_item.get("tx-error", match_item.get("tx-errors", 0)))
+    rx_drops = parse_int_safe(match_item.get("rx-drop", match_item.get("rx-drops", 0)))
+    tx_drops = parse_int_safe(match_item.get("tx-drop", match_item.get("tx-drops", 0)))
+
+    return InterfaceTrafficResponse(
+        interface=interface_name,
+        rx_bytes=rx_bytes,
+        tx_bytes=tx_bytes,
+        rx_packets=rx_packets,
+        tx_packets=tx_packets,
+        rx_errors=rx_errors,
+        tx_errors=tx_errors,
+        rx_drops=rx_drops,
+        tx_drops=tx_drops,
+    )
+
+
 def parse_bgp_peers_data(api_client: Any, details: bool = False) -> BgpPeersResponse:
     """
     Queries BGP sessions/peers compatible with RouterOS 7 and 6.
@@ -347,7 +483,7 @@ def parse_bgp_peers_data(api_client: Any, details: bool = False) -> BgpPeersResp
     )
 
 
-# LangChain Read-Only Tool Definitions
+# --- LangChain Read-Only Tool Definitions ---
 
 @tool
 def get_system_health() -> str:
@@ -371,6 +507,39 @@ def get_interfaces(details: bool = False, interface_name: Optional[str] = None) 
     with get_routeros_client() as api:
         iface_data = parse_interfaces_data(api, details=details, interface_name=interface_name)
         return iface_data.model_dump_json(exclude_none=True)
+
+
+@tool
+def get_interface_detail(interface_name: str) -> str:
+    """
+    Retrieves detailed parameters (MTU, MAC address, link downs, error/drop counters) for ONE specific target interface.
+    """
+    logger.info(f"Executing tool: get_interface_detail (interface_name={interface_name})")
+    with get_routeros_client() as api:
+        detail_data = parse_single_interface_detail(api, interface_name=interface_name)
+        return detail_data.model_dump_json()
+
+
+@tool
+def get_interface_logs(interface_name: str) -> str:
+    """
+    Retrieves timestamped RouterOS event logs related to ONE specific target interface.
+    """
+    logger.info(f"Executing tool: get_interface_logs (interface_name={interface_name})")
+    with get_routeros_client() as api:
+        log_data = parse_interface_logs(api, interface_name=interface_name)
+        return log_data.model_dump_json()
+
+
+@tool
+def get_interface_traffic(interface_name: str) -> str:
+    """
+    Retrieves current real-time traffic and error counters for ONE specific target interface.
+    """
+    logger.info(f"Executing tool: get_interface_traffic (interface_name={interface_name})")
+    with get_routeros_client() as api:
+        traffic_data = parse_interface_traffic(api, interface_name=interface_name)
+        return traffic_data.model_dump_json()
 
 
 @tool
