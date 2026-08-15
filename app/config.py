@@ -43,7 +43,10 @@ class Settings(BaseSettings):
     COLLECTOR_INTERVAL_SECONDS: int = Field(default=60, description="Background telemetry collection interval in seconds")
     CORRELATION_WINDOW_SECONDS: int = Field(default=300, description="Correlation window for grouping related events into an incident (default 5 min)")
 
-    # Phase 4.4 Event Lifecycle & Traffic Threshold Configuration
+    # Phase 4.4 Time-Aware Lookback Windows and Baseline Threshold Configuration
+    ANOMALY_LOOKBACK_MINUTES: int = Field(default=15, description="Lookback window in minutes for system, interface, and route metrics")
+    BGP_LOOKBACK_MINUTES: int = Field(default=30, description="Lookback window in minutes for BGP peer metrics")
+    MIN_BASELINE_SAMPLES: int = Field(default=10, description="Minimum baseline samples required for baseline anomaly rules")
     TRAFFIC_DROP_PERCENT: float = Field(default=70.0, description="Traffic drop percentage threshold (default 70%)")
     MIN_BASELINE_BPS: float = Field(default=10000.0, description="Minimum baseline bps threshold to prevent false positives on low-traffic interfaces (default 10 Kbps)")
     PERSISTENCE_SAMPLES: int = Field(default=3, description="Consecutive low samples required to trigger TRAFFIC_DROP (default 3 samples)")

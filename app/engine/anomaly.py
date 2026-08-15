@@ -11,7 +11,7 @@ from app.db.database import db
 
 logger = logging.getLogger("mikrotik_noc_agent.anomaly")
 
-# Global Diagnostic State for Phase 4.3 Engine Diagnostics
+# Global Diagnostic State for Phase 4.3/4.4 Engine Diagnostics
 engine_diagnostics: Dict[str, Any] = {
     "engine": "ready",
     "last_evaluation": None,
@@ -51,32 +51,32 @@ class AnomalyDetector:
     @staticmethod
     def run_evaluation_cycle() -> Dict[str, Any]:
         """
-        Executes ONE deterministic anomaly evaluation cycle across historical SQLite telemetry.
+        Executes ONE deterministic anomaly evaluation cycle across historical SQLite telemetry using time-aware lookback windows.
         Updates engine diagnostics and returns statistics breakdown.
         """
         t_start = time.perf_counter()
         devices = db.get_devices()
         total_metrics = 0
-        total_anomalies = 0
         rule_details: Dict[str, Any] = {
-            "CPU_SPIKE": {"evaluated": False, "samples": 0, "required": 10, "status": "NOT_EVALUATED", "anomaly": False},
-            "MEMORY_SPIKE": {"evaluated": False, "samples": 0, "required": 10, "status": "NOT_EVALUATED", "anomaly": False},
-            "TRAFFIC_DROP": {"evaluated": False, "samples": 0, "required": 10, "status": "NOT_EVALUATED", "anomaly": False},
-            "TRAFFIC_SPIKE": {"evaluated": False, "samples": 0, "required": 10, "status": "NOT_EVALUATED", "anomaly": False},
+            "CPU_SPIKE": {"evaluated": False, "samples": 0, "required": settings.MIN_BASELINE_SAMPLES, "status": "NOT_EVALUATED", "anomaly": False},
+            "MEMORY_SPIKE": {"evaluated": False, "samples": 0, "required": settings.MIN_BASELINE_SAMPLES, "status": "NOT_EVALUATED", "anomaly": False},
+            "TRAFFIC_DROP": {"evaluated": False, "samples": 0, "required": settings.MIN_BASELINE_SAMPLES, "status": "NOT_EVALUATED", "anomaly": False},
+            "TRAFFIC_SPIKE": {"evaluated": False, "samples": 0, "required": settings.MIN_BASELINE_SAMPLES, "status": "NOT_EVALUATED", "anomaly": False},
             "INTERFACE_DOWN": {"evaluated": False, "samples": 0, "required": 2, "status": "NOT_EVALUATED", "anomaly": False},
             "BGP_SESSION_DOWN": {"evaluated": False, "samples": 0, "required": 2, "status": "NOT_EVALUATED", "anomaly": False},
-            "BGP_PREFIX_DROP": {"evaluated": False, "samples": 0, "required": 10, "status": "NOT_EVALUATED", "anomaly": False},
+            "BGP_PREFIX_DROP": {"evaluated": False, "samples": 0, "required": settings.MIN_BASELINE_SAMPLES, "status": "NOT_EVALUATED", "anomaly": False},
             "OSPF_NEIGHBOR_DOWN": {"evaluated": False, "samples": 0, "required": 2, "status": "NOT_EVALUATED", "anomaly": False},
             "DEFAULT_ROUTE_DOWN": {"evaluated": False, "samples": 0, "required": 2, "status": "NOT_EVALUATED", "anomaly": False},
         }
 
         all_detected_events: List[EventRecord] = []
+        has_insufficient_history = False
 
         for dev in devices:
             dev_id = dev["device_id"]
 
-            # 1. System Metrics Evaluation
-            sys_metrics = db.get_recent_device_metrics(dev_id, limit=50)
+            # 1. System Metrics Evaluation (Lookback window)
+            sys_metrics = db.get_recent_device_metrics(dev_id, limit=100, lookback_minutes=settings.ANOMALY_LOOKBACK_MINUTES)
             total_metrics += len(sys_metrics)
             if sys_metrics:
                 cpu_hist = [m["cpu_percent"] for m in sys_metrics]
@@ -89,24 +89,32 @@ class AnomalyDetector:
 
                 rule_details["CPU_SPIKE"]["evaluated"] = True
                 rule_details["CPU_SPIKE"]["samples"] = max(rule_details["CPU_SPIKE"]["samples"], len(cpu_hist))
-                rule_details["CPU_SPIKE"]["status"] = "HEALTHY" if len(cpu_hist) >= 10 else "INSUFFICIENT_HISTORY"
-                if any(e.type == "CPU_SPIKE" for e in evts):
+                if len(cpu_hist) < settings.MIN_BASELINE_SAMPLES:
+                    rule_details["CPU_SPIKE"]["status"] = "INSUFFICIENT_HISTORY"
+                    has_insufficient_history = True
+                elif any(e.type == "CPU_SPIKE" for e in evts):
                     rule_details["CPU_SPIKE"]["anomaly"] = True
-                    rule_details["CPU_SPIKE"]["status"] = "ANOMALY_DETECTED"
+                    rule_details["CPU_SPIKE"]["status"] = "ANOMALY"
+                else:
+                    rule_details["CPU_SPIKE"]["status"] = "HEALTHY"
 
                 rule_details["MEMORY_SPIKE"]["evaluated"] = True
                 rule_details["MEMORY_SPIKE"]["samples"] = max(rule_details["MEMORY_SPIKE"]["samples"], len(mem_hist))
-                rule_details["MEMORY_SPIKE"]["status"] = "HEALTHY" if len(mem_hist) >= 10 else "INSUFFICIENT_HISTORY"
-                if any(e.type == "MEMORY_SPIKE" for e in evts):
+                if len(mem_hist) < settings.MIN_BASELINE_SAMPLES:
+                    rule_details["MEMORY_SPIKE"]["status"] = "INSUFFICIENT_HISTORY"
+                    has_insufficient_history = True
+                elif any(e.type == "MEMORY_SPIKE" for e in evts):
                     rule_details["MEMORY_SPIKE"]["anomaly"] = True
-                    rule_details["MEMORY_SPIKE"]["status"] = "ANOMALY_DETECTED"
+                    rule_details["MEMORY_SPIKE"]["status"] = "ANOMALY"
+                else:
+                    rule_details["MEMORY_SPIKE"]["status"] = "HEALTHY"
 
             # 2. Interface Metrics Evaluation
             with db.get_connection() as conn:
                 iface_names = [r[0] for r in conn.execute("SELECT DISTINCT interface_name FROM interface_metrics WHERE device_id = ?", (dev_id,)).fetchall()]
             
             for if_name in iface_names:
-                if_metrics = db.get_recent_interface_metrics(dev_id, if_name, limit=50)
+                if_metrics = db.get_recent_interface_metrics(dev_id, if_name, limit=100, lookback_minutes=settings.ANOMALY_LOOKBACK_MINUTES)
                 total_metrics += len(if_metrics)
                 if if_metrics:
                     curr_running = bool(if_metrics[0]["running"])
@@ -119,23 +127,30 @@ class AnomalyDetector:
 
                     rule_details["INTERFACE_DOWN"]["evaluated"] = True
                     rule_details["INTERFACE_DOWN"]["samples"] = max(rule_details["INTERFACE_DOWN"]["samples"], len(if_metrics))
-                    rule_details["INTERFACE_DOWN"]["status"] = "HEALTHY" if len(if_metrics) >= 2 else "INSUFFICIENT_HISTORY"
-                    if any(e.type == "INTERFACE_DOWN" for e in evts):
+                    if len(if_metrics) < 2:
+                        rule_details["INTERFACE_DOWN"]["status"] = "INSUFFICIENT_HISTORY"
+                    elif any(e.type == "INTERFACE_DOWN" for e in evts):
                         rule_details["INTERFACE_DOWN"]["anomaly"] = True
-                        rule_details["INTERFACE_DOWN"]["status"] = "ANOMALY_DETECTED"
+                        rule_details["INTERFACE_DOWN"]["status"] = "ANOMALY"
+                    else:
+                        rule_details["INTERFACE_DOWN"]["status"] = "HEALTHY"
 
                     rule_details["TRAFFIC_DROP"]["evaluated"] = True
                     rule_details["TRAFFIC_DROP"]["samples"] = max(rule_details["TRAFFIC_DROP"]["samples"], len(rx_bps_hist))
-                    rule_details["TRAFFIC_DROP"]["status"] = "HEALTHY" if len(rx_bps_hist) >= 10 else "INSUFFICIENT_HISTORY"
-                    if any(e.type == "TRAFFIC_DROP" for e in evts):
+                    if len(rx_bps_hist) < settings.MIN_BASELINE_SAMPLES:
+                        rule_details["TRAFFIC_DROP"]["status"] = "INSUFFICIENT_HISTORY"
+                        has_insufficient_history = True
+                    elif any(e.type == "TRAFFIC_DROP" for e in evts):
                         rule_details["TRAFFIC_DROP"]["anomaly"] = True
-                        rule_details["TRAFFIC_DROP"]["status"] = "ANOMALY_DETECTED"
+                        rule_details["TRAFFIC_DROP"]["status"] = "ANOMALY"
+                    else:
+                        rule_details["TRAFFIC_DROP"]["status"] = "HEALTHY"
 
-            # 3. BGP Peer Evaluation
+            # 3. BGP Peer Evaluation (Lookback 30 min)
             with db.get_connection() as conn:
                 peers = [r[0] for r in conn.execute("SELECT DISTINCT peer FROM bgp_metrics WHERE device_id = ?", (dev_id,)).fetchall()]
             for peer_name in peers:
-                bgp_metrics = db.get_recent_bgp_metrics(dev_id, peer_name, limit=20)
+                bgp_metrics = db.get_recent_bgp_metrics(dev_id, peer_name, limit=50, lookback_minutes=settings.BGP_LOOKBACK_MINUTES)
                 total_metrics += len(bgp_metrics)
                 if bgp_metrics:
                     curr_est = bool(bgp_metrics[0]["established"])
@@ -148,23 +163,30 @@ class AnomalyDetector:
 
                     rule_details["BGP_SESSION_DOWN"]["evaluated"] = True
                     rule_details["BGP_SESSION_DOWN"]["samples"] = max(rule_details["BGP_SESSION_DOWN"]["samples"], len(bgp_metrics))
-                    rule_details["BGP_SESSION_DOWN"]["status"] = "HEALTHY" if len(bgp_metrics) >= 2 else "INSUFFICIENT_HISTORY"
-                    if any(e.type == "BGP_SESSION_DOWN" for e in evts):
+                    if len(bgp_metrics) < 2:
+                        rule_details["BGP_SESSION_DOWN"]["status"] = "INSUFFICIENT_HISTORY"
+                    elif any(e.type == "BGP_SESSION_DOWN" for e in evts):
                         rule_details["BGP_SESSION_DOWN"]["anomaly"] = True
-                        rule_details["BGP_SESSION_DOWN"]["status"] = "ANOMALY_DETECTED"
+                        rule_details["BGP_SESSION_DOWN"]["status"] = "ANOMALY"
+                    else:
+                        rule_details["BGP_SESSION_DOWN"]["status"] = "HEALTHY"
 
                     rule_details["BGP_PREFIX_DROP"]["evaluated"] = True
                     rule_details["BGP_PREFIX_DROP"]["samples"] = max(rule_details["BGP_PREFIX_DROP"]["samples"], len(bgp_metrics))
-                    rule_details["BGP_PREFIX_DROP"]["status"] = "HEALTHY" if len(bgp_metrics) >= 10 else "INSUFFICIENT_HISTORY"
-                    if any(e.type == "BGP_PREFIX_DROP" for e in evts):
+                    if len(bgp_metrics) < settings.MIN_BASELINE_SAMPLES:
+                        rule_details["BGP_PREFIX_DROP"]["status"] = "INSUFFICIENT_HISTORY"
+                        has_insufficient_history = True
+                    elif any(e.type == "BGP_PREFIX_DROP" for e in evts):
                         rule_details["BGP_PREFIX_DROP"]["anomaly"] = True
-                        rule_details["BGP_PREFIX_DROP"]["status"] = "ANOMALY_DETECTED"
+                        rule_details["BGP_PREFIX_DROP"]["status"] = "ANOMALY"
+                    else:
+                        rule_details["BGP_PREFIX_DROP"]["status"] = "HEALTHY"
 
             # 4. OSPF Neighbor Evaluation
             with db.get_connection() as conn:
                 nbrs = [r[0] for r in conn.execute("SELECT DISTINCT neighbor FROM ospf_metrics WHERE device_id = ?", (dev_id,)).fetchall()]
             for nbr_name in nbrs:
-                ospf_metrics = db.get_recent_ospf_metrics(dev_id, nbr_name, limit=20)
+                ospf_metrics = db.get_recent_ospf_metrics(dev_id, nbr_name, limit=50, lookback_minutes=settings.ANOMALY_LOOKBACK_MINUTES)
                 total_metrics += len(ospf_metrics)
                 if ospf_metrics:
                     curr_st = str(ospf_metrics[0]["state"])
@@ -175,14 +197,17 @@ class AnomalyDetector:
 
                     rule_details["OSPF_NEIGHBOR_DOWN"]["evaluated"] = True
                     rule_details["OSPF_NEIGHBOR_DOWN"]["samples"] = max(rule_details["OSPF_NEIGHBOR_DOWN"]["samples"], len(ospf_metrics))
-                    rule_details["OSPF_NEIGHBOR_DOWN"]["status"] = "HEALTHY" if len(ospf_metrics) >= 2 else "INSUFFICIENT_HISTORY"
-                    if any(e.type == "OSPF_NEIGHBOR_DOWN" for e in evts):
+                    if len(ospf_metrics) < 2:
+                        rule_details["OSPF_NEIGHBOR_DOWN"]["status"] = "INSUFFICIENT_HISTORY"
+                    elif any(e.type == "OSPF_NEIGHBOR_DOWN" for e in evts):
                         rule_details["OSPF_NEIGHBOR_DOWN"]["anomaly"] = True
-                        rule_details["OSPF_NEIGHBOR_DOWN"]["status"] = "ANOMALY_DETECTED"
+                        rule_details["OSPF_NEIGHBOR_DOWN"]["status"] = "ANOMALY"
+                    else:
+                        rule_details["OSPF_NEIGHBOR_DOWN"]["status"] = "HEALTHY"
 
             # 5. Default Route Evaluation
             with db.get_connection() as conn:
-                route_metrics = conn.execute("SELECT * FROM route_metrics WHERE device_id = ? AND destination = '0.0.0.0/0' ORDER BY id DESC LIMIT 20", (dev_id,)).fetchall()
+                route_metrics = conn.execute("SELECT * FROM route_metrics WHERE device_id = ? AND destination = '0.0.0.0/0' ORDER BY id DESC LIMIT 50", (dev_id,)).fetchall()
                 total_metrics += len(route_metrics)
                 if route_metrics:
                     curr_act = bool(route_metrics[0]["active"])
@@ -193,10 +218,13 @@ class AnomalyDetector:
 
                     rule_details["DEFAULT_ROUTE_DOWN"]["evaluated"] = True
                     rule_details["DEFAULT_ROUTE_DOWN"]["samples"] = max(rule_details["DEFAULT_ROUTE_DOWN"]["samples"], len(route_metrics))
-                    rule_details["DEFAULT_ROUTE_DOWN"]["status"] = "HEALTHY" if len(route_metrics) >= 2 else "INSUFFICIENT_HISTORY"
-                    if any(e.type == "DEFAULT_ROUTE_DOWN" for e in evts):
+                    if len(route_metrics) < 2:
+                        rule_details["DEFAULT_ROUTE_DOWN"]["status"] = "INSUFFICIENT_HISTORY"
+                    elif any(e.type == "DEFAULT_ROUTE_DOWN" for e in evts):
                         rule_details["DEFAULT_ROUTE_DOWN"]["anomaly"] = True
-                        rule_details["DEFAULT_ROUTE_DOWN"]["status"] = "ANOMALY_DETECTED"
+                        rule_details["DEFAULT_ROUTE_DOWN"]["status"] = "ANOMALY"
+                    else:
+                        rule_details["DEFAULT_ROUTE_DOWN"]["status"] = "HEALTHY"
 
         # Deduplicate and process events via Correlation Engine
         from app.engine.correlation import CorrelationEngine
@@ -206,6 +234,14 @@ class AnomalyDetector:
         t_end = time.perf_counter()
         dur_ms = max(1, int((t_end - t_start) * 1000))
 
+        # Overall Status Governance (Task 16: Never report NO_ANOMALY / HEALTHY if any critical rule has INSUFFICIENT_HISTORY)
+        if all_detected_events:
+            overall_status = "ANOMALY"
+        elif has_insufficient_history:
+            overall_status = "INSUFFICIENT_HISTORY"
+        else:
+            overall_status = "HEALTHY"
+
         # Update Engine Diagnostics
         engine_diagnostics["engine"] = "running"
         engine_diagnostics["last_evaluation"] = datetime.now(timezone.utc).isoformat()
@@ -213,7 +249,7 @@ class AnomalyDetector:
         engine_diagnostics["metrics_evaluated"] = total_metrics
         engine_diagnostics["rules_evaluated"] = len(CONFIGURED_RULES)
         engine_diagnostics["anomalies_detected"] = len(all_detected_events)
-        engine_diagnostics["status"] = "ANOMALY_DETECTED" if all_detected_events else "NO_ANOMALY"
+        engine_diagnostics["status"] = overall_status
         engine_diagnostics["rule_details"] = rule_details
 
         return {
@@ -223,13 +259,14 @@ class AnomalyDetector:
             "anomalies_detected": len(all_detected_events),
             "events_created": len(all_detected_events),
             "duration_ms": dur_ms,
+            "overall_status": overall_status,
             "rules": rule_details
         }
 
     @staticmethod
     def check_device_cpu_memory(device_id: str, current_cpu: float, current_mem: float, cpu_history: List[float], mem_history: List[float]) -> List[EventRecord]:
         events: List[EventRecord] = []
-        cpu_bl = calculate_baseline(cpu_history, min_samples=10)
+        cpu_bl = calculate_baseline(cpu_history, min_samples=settings.MIN_BASELINE_SAMPLES)
         
         # CPU Spike Rule
         if cpu_bl.baseline_status == "NORMAL" and current_cpu > (cpu_bl.moving_average + 3.0 * cpu_bl.stddev) and current_cpu > 70.0:
@@ -256,7 +293,7 @@ class AnomalyDetector:
                 event_id=str(uuid.uuid4()),
                 device_id=device_id,
                 type="CPU_SPIKE",
-                severity="MAJOR",
+                severity="CRITICAL",
                 source="deterministic_engine",
                 entity="system",
                 evidence={"current_cpu": current_cpu},
@@ -264,13 +301,14 @@ class AnomalyDetector:
             ))
 
         # Memory Spike Rule
-        if current_mem > 85.0:
+        mem_bl = calculate_baseline(mem_history, min_samples=settings.MIN_BASELINE_SAMPLES)
+        if current_mem > 85.0 or (mem_bl.baseline_status == "NORMAL" and current_mem > (mem_bl.moving_average + 3.0 * mem_bl.stddev) and current_mem > 75.0):
             fp = generate_fingerprint(device_id, "MEMORY_SPIKE", "system")
             events.append(EventRecord(
                 event_id=str(uuid.uuid4()),
                 device_id=device_id,
                 type="MEMORY_SPIKE",
-                severity="WARNING" if current_mem < 95.0 else "MAJOR",
+                severity="WARNING" if current_mem < 90.0 else "MAJOR",
                 source="deterministic_engine",
                 entity="system",
                 evidence={"current_memory": current_mem},
@@ -283,8 +321,12 @@ class AnomalyDetector:
     def check_interface_status(device_id: str, interface_name: str, current_running: bool, current_disabled: bool, prev_running: Optional[bool], rx_bps_history: List[float]) -> List[EventRecord]:
         events: List[EventRecord] = []
         
-        # Interface Down Rule
-        if prev_running is True and current_running is False and not current_disabled:
+        # Interface Down Rule (Differentiating ADMIN_DOWN vs UNEXPECTED_DOWN)
+        if current_disabled:
+            # ADMIN_DOWN: disabled by administrator (not an operational anomaly)
+            pass
+        elif prev_running is True and current_running is False:
+            # UNEXPECTED_DOWN: running interface suddenly went down
             fp = generate_fingerprint(device_id, "INTERFACE_DOWN", interface_name)
             events.append(EventRecord(
                 event_id=str(uuid.uuid4()),
@@ -293,12 +335,12 @@ class AnomalyDetector:
                 severity="MAJOR",
                 source="deterministic_engine",
                 entity=interface_name,
-                evidence={"interface": interface_name, "prev_running": True, "current_running": False},
+                evidence={"interface": interface_name, "prev_running": True, "current_running": False, "state": "UNEXPECTED_DOWN"},
                 fingerprint=fp
             ))
 
         # Interface Recovered Rule
-        if prev_running is False and current_running is True:
+        if prev_running is False and current_running is True and not current_disabled:
             fp = generate_fingerprint(device_id, "INTERFACE_RECOVERED", interface_name)
             events.append(EventRecord(
                 event_id=str(uuid.uuid4()),
@@ -311,18 +353,16 @@ class AnomalyDetector:
                 fingerprint=fp
             ))
 
-        # Traffic Drop & Spike Rules (Baseline requirement >= 10 samples)
+        # Traffic Drop & Spike Rules (Baseline requirement >= MIN_BASELINE_SAMPLES)
         if rx_bps_history and current_running:
-            tr_bl = calculate_baseline(rx_bps_history, min_samples=10)
+            tr_bl = calculate_baseline(rx_bps_history, min_samples=settings.MIN_BASELINE_SAMPLES)
             
-            # Rule 5: Low Traffic Interfaces Protection
-            # Do NOT create TRAFFIC_DROP if baseline moving average is below MIN_BASELINE_BPS (10 Kbps)
-            # or if the interface is dynamic/tunnel/PPP/VPN with low traffic.
+            # Low Traffic Interfaces Protection: Do NOT create TRAFFIC_DROP if baseline moving average is below MIN_BASELINE_BPS (10 Kbps)
             if tr_bl.baseline_status == "NORMAL" and tr_bl.moving_average >= settings.MIN_BASELINE_BPS:
                 current_bps = rx_bps_history[0]
                 drop_pct = (1.0 - (current_bps / tr_bl.moving_average)) * 100.0 if tr_bl.moving_average > 0 else 0.0
                 
-                # Rule 4: Persistence requirement (consecutive samples below threshold)
+                # Persistence requirement (consecutive samples below threshold)
                 p_samples = min(len(rx_bps_history), settings.PERSISTENCE_SAMPLES)
                 recent_samples = rx_bps_history[:p_samples]
                 is_persistent_low = all(s < (tr_bl.moving_average * (1.0 - (settings.TRAFFIC_DROP_PERCENT / 100.0))) for s in recent_samples)
@@ -369,7 +409,7 @@ class AnomalyDetector:
     def check_bgp_status(device_id: str, peer: str, current_est: bool, prev_est: Optional[bool], current_prefix: int, prev_prefix: Optional[int]) -> List[EventRecord]:
         events: List[EventRecord] = []
 
-        # BGP Session Down Rule
+        # BGP Session Down Rule (Only triggers when previous was established AND current is not established)
         if prev_est is True and current_est is False:
             fp = generate_fingerprint(device_id, "BGP_SESSION_DOWN", peer)
             events.append(EventRecord(
@@ -421,7 +461,7 @@ class AnomalyDetector:
         is_curr_full = ("full" in current_state.lower())
         is_prev_full = ("full" in prev_state.lower()) if prev_state else None
 
-        # OSPF Neighbor Down Rule
+        # OSPF Neighbor Down Rule (Only Full -> non-Full)
         if is_prev_full is True and is_curr_full is False:
             fp = generate_fingerprint(device_id, "OSPF_NEIGHBOR_DOWN", neighbor)
             events.append(EventRecord(
@@ -483,4 +523,35 @@ class AnomalyDetector:
                 fingerprint=fp
             ))
 
+        return events
+
+    @staticmethod
+    def check_nat_rules(device_id: str, nat_rules: List[Dict[str, Any]], running_interfaces: List[str]) -> List[EventRecord]:
+        """
+        Task 10: NAT Rule Correlation.
+        Inspects active NAT rules and out-interface / out-interface-list dependencies.
+        Never infers ether10 = WAN arbitrarily. If dependency cannot be established, returns empty or INSUFFICIENT_EVIDENCE.
+        """
+        events: List[EventRecord] = []
+        for r in nat_rules:
+            if not r.get("enabled", True):
+                continue
+            out_if = r.get("interface_dependency") or r.get("out_interface")
+            if out_if and out_if not in running_interfaces:
+                fp = generate_fingerprint(device_id, "NAT_DEPENDENCY_DOWN", out_if)
+                events.append(EventRecord(
+                    event_id=str(uuid.uuid4()),
+                    device_id=device_id,
+                    type="NAT_DEPENDENCY_DOWN",
+                    severity="MAJOR",
+                    source="deterministic_engine",
+                    entity=out_if,
+                    evidence={
+                        "rule_id": r.get("rule_id"),
+                        "out_interface": out_if,
+                        "interface_running": False,
+                        "packets": r.get("packets", 0)
+                    },
+                    fingerprint=fp
+                ))
         return events

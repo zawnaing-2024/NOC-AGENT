@@ -231,3 +231,21 @@ def test_full_acceptance_test_simulation(test_db):
         # Step 5: Verify Incident status is RESOLVED / CLOSED
         inc_resolved = test_db.get_incident_by_id(inc["incident_id"])
         assert inc_resolved["status"] in ["RESOLVED", "CLOSED"]
+
+
+def test_nat_active_with_wan_interface():
+    """Task 10: NAT rule referencing a DOWN outbound interface generates NAT_DEPENDENCY_DOWN."""
+    nat_rules = [{"rule_id": "r1", "enabled": True, "interface_dependency": "ether10", "packets": 500}]
+    # ether10 is NOT in running interfaces list
+    events = AnomalyDetector.check_nat_rules("103.59.163.7", nat_rules, running_interfaces=["sfp-sfpplus1"])
+    assert len(events) == 1
+    assert events[0].type == "NAT_DEPENDENCY_DOWN"
+    assert events[0].entity == "ether10"
+
+
+def test_nat_unrelated_down_interface_negative():
+    """Task 10: NAT rule with RUNNING outbound interface does NOT generate anomaly even if unrelated ether10 is down."""
+    nat_rules = [{"rule_id": "r1", "enabled": True, "interface_dependency": "sfp-sfpplus1", "packets": 500}]
+    # sfp-sfpplus1 IS running
+    events = AnomalyDetector.check_nat_rules("103.59.163.7", nat_rules, running_interfaces=["sfp-sfpplus1"])
+    assert len(events) == 0

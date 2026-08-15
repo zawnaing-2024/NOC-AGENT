@@ -377,29 +377,61 @@ class DatabaseManager:
             rows = conn.execute("SELECT * FROM devices ORDER BY device_id").fetchall()
             return [dict(r) for r in rows]
 
-    def get_recent_device_metrics(self, device_id: str, limit: int = 100) -> List[Dict[str, Any]]:
+    def get_recent_device_metrics(self, device_id: str, limit: int = 100, lookback_minutes: Optional[int] = None) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
+            if lookback_minutes:
+                from datetime import datetime, timezone, timedelta
+                cutoff = (datetime.now(timezone.utc) - timedelta(minutes=lookback_minutes)).isoformat()
+                rows = conn.execute("""
+                    SELECT * FROM device_metrics WHERE device_id = ? AND timestamp >= ? ORDER BY id DESC LIMIT ?
+                """, (device_id, cutoff, limit)).fetchall()
+                if rows:
+                    return [dict(r) for r in rows]
             rows = conn.execute("""
                 SELECT * FROM device_metrics WHERE device_id = ? ORDER BY id DESC LIMIT ?
             """, (device_id, limit)).fetchall()
             return [dict(r) for r in rows]
 
-    def get_recent_interface_metrics(self, device_id: str, interface_name: str, limit: int = 100) -> List[Dict[str, Any]]:
+    def get_recent_interface_metrics(self, device_id: str, interface_name: str, limit: int = 100, lookback_minutes: Optional[int] = None) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
+            if lookback_minutes:
+                from datetime import datetime, timezone, timedelta
+                cutoff = (datetime.now(timezone.utc) - timedelta(minutes=lookback_minutes)).isoformat()
+                rows = conn.execute("""
+                    SELECT * FROM interface_metrics WHERE device_id = ? AND interface_name = ? AND timestamp >= ? ORDER BY id DESC LIMIT ?
+                """, (device_id, interface_name, cutoff, limit)).fetchall()
+                if rows:
+                    return [dict(r) for r in rows]
             rows = conn.execute("""
                 SELECT * FROM interface_metrics WHERE device_id = ? AND interface_name = ? ORDER BY id DESC LIMIT ?
             """, (device_id, interface_name, limit)).fetchall()
             return [dict(r) for r in rows]
 
-    def get_recent_bgp_metrics(self, device_id: str, peer: str, limit: int = 100) -> List[Dict[str, Any]]:
+    def get_recent_bgp_metrics(self, device_id: str, peer: str, limit: int = 100, lookback_minutes: Optional[int] = None) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
+            if lookback_minutes:
+                from datetime import datetime, timezone, timedelta
+                cutoff = (datetime.now(timezone.utc) - timedelta(minutes=lookback_minutes)).isoformat()
+                rows = conn.execute("""
+                    SELECT * FROM bgp_metrics WHERE device_id = ? AND (peer = ? OR remote_address = ?) AND timestamp >= ? ORDER BY id DESC LIMIT ?
+                """, (device_id, peer, peer, cutoff, limit)).fetchall()
+                if rows:
+                    return [dict(r) for r in rows]
             rows = conn.execute("""
                 SELECT * FROM bgp_metrics WHERE device_id = ? AND (peer = ? OR remote_address = ?) ORDER BY id DESC LIMIT ?
             """, (device_id, peer, peer, limit)).fetchall()
             return [dict(r) for r in rows]
 
-    def get_recent_ospf_metrics(self, device_id: str, neighbor: str, limit: int = 100) -> List[Dict[str, Any]]:
+    def get_recent_ospf_metrics(self, device_id: str, neighbor: str, limit: int = 100, lookback_minutes: Optional[int] = None) -> List[Dict[str, Any]]:
         with self.get_connection() as conn:
+            if lookback_minutes:
+                from datetime import datetime, timezone, timedelta
+                cutoff = (datetime.now(timezone.utc) - timedelta(minutes=lookback_minutes)).isoformat()
+                rows = conn.execute("""
+                    SELECT * FROM ospf_metrics WHERE device_id = ? AND (neighbor = ? OR router_id = ?) AND timestamp >= ? ORDER BY id DESC LIMIT ?
+                """, (device_id, neighbor, neighbor, cutoff, limit)).fetchall()
+                if rows:
+                    return [dict(r) for r in rows]
             rows = conn.execute("""
                 SELECT * FROM ospf_metrics WHERE device_id = ? AND (neighbor = ? OR router_id = ?) ORDER BY id DESC LIMIT ?
             """, (device_id, neighbor, neighbor, limit)).fetchall()
